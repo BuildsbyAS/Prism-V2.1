@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkrr_prototype=self.webpackChunkrr_prototype||[]).push([[705],{86(e,r,s){s.d(r,{scanDesignTokens:()=>p.ox});var p=s(770)}}]);

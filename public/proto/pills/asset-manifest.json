@@ -1,0 +1,21 @@
+{
+  "files": {
+    "main.css": "/proto/pills/static/css/main.de7690e6.css",
+    "main.js": "/proto/pills/static/js/main.0752b275.js",
+    "static/js/705.5eb03d83.chunk.js": "/proto/pills/static/js/705.5eb03d83.chunk.js",
+    "static/js/164.451ef2de.chunk.js": "/proto/pills/static/js/164.451ef2de.chunk.js",
+    "static/js/206.d45e352e.chunk.js": "/proto/pills/static/js/206.d45e352e.chunk.js",
+    "static/media/Noontree-Bold.otf": "/proto/pills/static/media/Noontree-Bold.1ff0b3cdb60269a2af4f.otf",
+    "static/media/Noontree-ExtraBold.otf": "/proto/pills/static/media/Noontree-ExtraBold.7a90fb49827253bc1487.otf",
+    "static/media/Noontree-SemiBold.otf": "/proto/pills/static/media/Noontree-SemiBold.b9828e7dd3abd84c82db.otf",
+    "static/media/Noontree-Black.otf": "/proto/pills/static/media/Noontree-Black.e06c87cfc83862caf516.otf",
+    "static/media/Noontree-Medium.otf": "/proto/pills/static/media/Noontree-Medium.ded6fc93cf02915f49c8.otf",
+    "static/media/Noontree-Regular.otf": "/proto/pills/static/media/Noontree-Regular.b7d44f490479f6dd1eeb.otf",
+    "static/media/Noontree-Light.otf": "/proto/pills/static/media/Noontree-Light.d4b7b3b7f4692471240e.otf",
+    "index.html": "/proto/pills/index.html"
+  },
+  "entrypoints": [
+    "static/css/main.de7690e6.css",
+    "static/js/main.0752b275.js"
+  ]
+}

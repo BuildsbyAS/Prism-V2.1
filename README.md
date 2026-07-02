@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RnR 2.0 — A/B preference poll
 
-## Getting Started
+A single shareable page that puts two Ratings & Reviews prototypes side by side,
+lets visitors try both, vote **A / B / Both**, leave an optional note, and see
+**live results**. Built with Next.js + Supabase, deployed on Vercel.
 
-First, run the development server:
+- **A** = Pills prototype · **B** = Checkbox prototype
+- Both prototypes are bundled as static builds in `public/proto/{pills,checkbox}`.
+
+## How it works
+
+- `app/page.tsx` — the poll UI (a client component).
+- `lib/supabase.ts` — browser Supabase client (reads the two `NEXT_PUBLIC_*` env vars).
+- `supabase/schema.sql` — the `votes` table + Row-Level Security policies.
+- Without env vars the app runs in **demo mode** (votes kept in-browser only).
+
+## 1. Set up Supabase
+
+1. Create a free account + project at <https://supabase.com> (New project → pick a
+   name + database password → wait ~2 min for it to provision).
+2. Open **SQL Editor → New query**, paste the contents of
+   [`supabase/schema.sql`](supabase/schema.sql), and click **Run**.
+3. Open **Project Settings → API** and copy:
+   - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
+   - **Project API keys → `anon` `public`** → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+Both keys are safe to expose publicly — RLS only allows inserting and reading votes.
+
+## 2. Run locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+# put your keys in .env.local
+npm run dev   # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 3. Deploy to Vercel
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+vercel            # link + preview deploy
+vercel --prod     # production
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Add the two `NEXT_PUBLIC_*` env vars in **Vercel → Project → Settings →
+Environment Variables** (or `vercel env add`), then redeploy so they're inlined
+into the build. The production URL is your shareable poll link.
 
-## Learn More
+## Viewing results
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Voters see live tallies after submitting. You can also see every row (including
+comments) in **Supabase → Table editor → `votes`**.
