@@ -1,18 +1,25 @@
 import type { Metadata } from 'next'
+import { Retune } from 'retune'
+import { GeistSans } from 'geist/font/sans'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'RnR 2.0 — Which review flow feels better?',
+  title: 'Prism — Internal feedback forms',
   description:
-    'Vote on two Ratings & Reviews prototypes: Pills (A) vs Checkbox (B). Pick one, leave a note, see live results.',
+    'Build structured feedback flows — compare prototypes, rate, slide, choose, comment — publish via link, and read decision-ready results.',
 }
 
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <body className="min-h-full">{children}</body>
+    <html lang="en" className={`${GeistSans.variable} h-full antialiased`}>
+      <body className="min-h-full">
+        {children}
+        {/* Retune visual-editing overlay — renders in development only. Press
+            Option+D (Alt+D) to toggle edit mode. */}
+        <Retune />
+      </body>
     </html>
   )
 }

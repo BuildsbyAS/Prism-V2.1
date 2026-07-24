@@ -1,0 +1,55 @@
+{
+  "version": 2,
+  "tokens": {
+    "colors": {
+      "color-bg": {
+        "value": "#ffffff",
+        "variable": "--color-bg"
+      },
+      "color-card": {
+        "value": "#ffffff",
+        "variable": "--color-card"
+      },
+      "color-ink": {
+        "value": "#18191d",
+        "variable": "--color-ink"
+      },
+      "color-muted": {
+        "value": "#76798a",
+        "variable": "--color-muted"
+      },
+      "color-line": {
+        "value": "#ededec",
+        "variable": "--color-line"
+      },
+      "color-line-strong": {
+        "value": "#e3e3e0",
+        "variable": "--color-line-strong"
+      },
+      "color-draft": {
+        "value": "#9a6a12",
+        "variable": "--color-draft"
+      },
+      "color-draft-bg": {
+        "value": "#fbf3e3",
+        "variable": "--color-draft-bg"
+      },
+      "color-open": {
+        "value": "#15803d",
+        "variable": "--color-open"
+      },
+      "color-open-bg": {
+        "value": "#eaf7ee",
+        "variable": "--color-open-bg"
+      },
+      "color-closed": {
+        "value": "#76798a",
+        "variable": "--color-closed"
+      },
+      "color-closed-bg": {
+        "value": "#f2f2f1",
+        "variable": "--color-closed-bg"
+      }
+    }
+  }
+}

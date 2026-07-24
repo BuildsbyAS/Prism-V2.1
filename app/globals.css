@@ -1,12 +1,32 @@
 @import "tailwindcss";
 
 @theme {
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+
+  /* Motion — strong custom curves (the built-in CSS easings are too weak). These
+     override Tailwind's `ease-out`/`ease-in-out` utilities and become the default
+     for every `transition-*` utility, so the whole app feels snappy by default. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --default-transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  --default-transition-duration: 180ms;
+
   --color-bg: #ffffff;
   --color-card: #ffffff;
   --color-ink: #18191d;
   --color-muted: #76798a;
   --color-line: #ededec;
   --color-line-strong: #e3e3e0;
+
+  /* Status accents for form state (Draft / Open / Closed). Muted to sit inside
+     the existing palette rather than shout. */
+  --color-draft: #9a6a12;
+  --color-draft-bg: #fbf3e3;
+  --color-open: #15803d;
+  --color-open-bg: #eaf7ee;
+  --color-closed: #76798a;
+  --color-closed-bg: #f2f2f1;
 }
 
 html {
@@ -16,8 +36,7 @@ html {
 body {
   background: var(--color-bg);
   color: var(--color-ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
@@ -66,3 +85,172 @@ body {
     --s: 0.7;
   }
 }
+
+/* Auto-growing inline editors for the live-editable builder canvas. Textareas
+   size to their content where supported; a min-height keeps a sensible floor. */
+.field-auto {
+  field-sizing: content;
+}
+
+/* ---------------------------------------------------------------------------
+   Micro-interactions (Emil Kowalski's design-engineering philosophy).
+   --------------------------------------------------------------------------- */
+
+/* Universal press feedback: every pressable element scales down slightly, so the
+   UI feels like it's truly listening. Buttons that already carry a `transition`
+   utility keep it (higher specificity); the rest inherit a transform transition. */
+button,
+[role="button"],
+summary {
+  transition-property: transform, background-color, border-color, color, opacity, box-shadow, filter;
+  transition-timing-function: var(--ease-out);
+  transition-duration: 160ms;
+}
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  transform: scale(0.97);
+}
+
+/* Origin-aware entrances. Modals scale from center; popovers scale from their
+   trigger edge. Nothing appears from scale(0) — always 0.96 + opacity. */
+.u-overlay {
+  transition: opacity 200ms var(--ease-out);
+}
+.u-modal {
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 220ms var(--ease-out);
+}
+.u-popover {
+  transition:
+    opacity 150ms var(--ease-out),
+    transform 150ms var(--ease-out);
+}
+@starting-style {
+  .u-overlay {
+    opacity: 0;
+  }
+  .u-modal {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  .u-popover {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Content swap — crossfade + tiny rise when a keyed region's content changes
+   (e.g. switching modal tabs), so states morph rather than snap. */
+.u-swap {
+  transition:
+    opacity 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+@starting-style {
+  .u-swap {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Staggered list entrance — a gentle cascade instead of everything at once. */
+@keyframes u-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.u-stagger > * {
+  animation: u-fade-up 340ms var(--ease-out) both;
+}
+.u-stagger > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.u-stagger > *:nth-child(2) {
+  animation-delay: 45ms;
+}
+.u-stagger > *:nth-child(3) {
+  animation-delay: 90ms;
+}
+.u-stagger > *:nth-child(4) {
+  animation-delay: 135ms;
+}
+.u-stagger > *:nth-child(5) {
+  animation-delay: 180ms;
+}
+.u-stagger > *:nth-child(6) {
+  animation-delay: 225ms;
+}
+.u-stagger > *:nth-child(n + 7) {
+  animation-delay: 270ms;
+}
+
+/* Celebratory pop — reserved for rare, first-time moments (Emil's framework
+   allows delight where an animation is seen infrequently). */
+@keyframes u-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.u-pop {
+  animation: u-pop 380ms var(--ease-out) both;
+}
+
+/* Attention flash — pulse a panel section to draw the eye after a related action
+   elsewhere (e.g. clicking "add feedback widget" flashes the input picker). Two
+   quick pulses of tint + inset ring, then settle. */
+@keyframes u-flash {
+  0% { background-color: transparent; box-shadow: inset 0 0 0 0 rgba(24, 25, 29, 0); }
+  15% { background-color: rgba(24, 25, 29, 0.06); box-shadow: inset 0 0 0 2px rgba(24, 25, 29, 0.28); }
+  30% { background-color: transparent; box-shadow: inset 0 0 0 0 rgba(24, 25, 29, 0); }
+  45% { background-color: rgba(24, 25, 29, 0.06); box-shadow: inset 0 0 0 2px rgba(24, 25, 29, 0.28); }
+  100% { background-color: transparent; box-shadow: inset 0 0 0 0 rgba(24, 25, 29, 0); }
+}
+.u-flash {
+  animation: u-flash 1000ms var(--ease-out);
+}
+
+/* Page-to-page transition — the incoming screen rises from below and fades in,
+   giving a Typeform-style vertical shift (as if scrolled to the next page). */
+@keyframes u-rise {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.u-rise {
+  animation: u-rise 420ms var(--ease-out) both;
+}
+
+/* Accessibility: honour reduced-motion — keep opacity fades, drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  button:not(:disabled):active,
+  [role="button"]:active {
+    transform: none;
+  }
+}
+
