@@ -7,6 +7,7 @@ import { getPublicForm, submitResponse, getResults, upvoteAnswer } from '@/lib/s
 import MediaEmbed from '@/components/MediaEmbed'
 import WidgetInput from '@/components/WidgetInput'
 import { WIDGET_META } from '@/lib/builder'
+import HeroPanel from '@/components/HeroPanel'
 
 type Phase = 'welcome' | 'vote' | 'submitting' | 'done'
 
@@ -143,6 +144,34 @@ export default function VoterPage() {
   // Animate on screen change (welcome ↔ vote ↔ done); submitting stays on vote.
   const screen = phase === 'submitting' ? 'vote' : phase
 
+  // Welcome + hero media gets its own full-bleed split layout: copy on the left,
+  // the media on its backdrop running edge to edge on the right. Below lg
+  // (tablet and mobile) the two halves stack.
+  if (phase === 'welcome' && form.hero_image_url) {
+    return (
+      // On desktop each column is exactly half the screen and the media column
+      // is exactly one viewport tall, so the media can never exceed 50vw × 100dvh.
+      <main className="grid min-h-dvh w-full lg:h-dvh lg:grid-cols-2">
+        <div className="u-rise flex flex-col justify-center px-6 py-14 sm:px-10 lg:px-14 lg:overflow-y-auto">
+          <p className="text-[14px] font-medium text-muted">{form.title || 'Feedback'}</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[32px]">{form.title || 'Share your feedback'}</h1>
+          {form.body_copy && <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted">{form.body_copy}</p>}
+          <div className="mt-8">
+            <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
+              Get started
+            </button>
+            {form.show_time_estimate && (
+              <p className="mt-2.5 text-[13px] text-muted">
+                Takes about {form.estimated_minutes} minute{form.estimated_minutes === 1 ? '' : 's'}
+              </p>
+            )}
+          </div>
+        </div>
+        <HeroPanel src={form.hero_image_url} bg={form.hero_bg} className="h-[60vh] lg:h-full" />
+      </main>
+    )
+  }
+
   return (
     // Vertically center the content: my-auto centers it when short, and collapses
     // to top-aligned + scrollable when the content is taller than the viewport.
@@ -153,19 +182,11 @@ export default function VoterPage() {
       <div key={screen} className="u-rise">
       {/* ------------------------------ Welcome ----------------------------- */}
       {phase === 'welcome' && (
+        // No hero media — the copy simply runs full width. The media variant is
+        // handled by the full-bleed split layout above.
         <>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[28px]">{form.title || 'Share your feedback'}</h1>
           {form.body_copy && <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted">{form.body_copy}</p>}
-          {form.hero_image_url && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={form.hero_image_url} alt="" className="mt-6 w-full rounded-[26px] border border-line object-cover" />
-          )}
-          {(form.usps_metrics || form.project_brief) && (
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              {form.usps_metrics && <MetaCard label="Impacts" body={form.usps_metrics} />}
-              {form.project_brief && <MetaCard label="Brief" body={form.project_brief} />}
-            </div>
-          )}
           <div className="mt-8">
             <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
               Get started
@@ -417,15 +438,6 @@ function ThankYou({
           ))}
         </div>
       )}
-    </div>
-  )
-}
-
-function MetaCard({ label, body }: { label: string; body: string }) {
-  return (
-    <div className="rounded-2xl border border-line bg-black/[0.015] p-4">
-      <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">{label}</p>
-      <p className="mt-1 text-[14px] leading-relaxed">{body}</p>
     </div>
   )
 }

@@ -2,7 +2,7 @@ import type { FormStatus } from '@/lib/types'
 
 const STYLES: Record<FormStatus, { label: string; className: string }> = {
   draft: { label: 'Draft', className: 'text-draft bg-draft-bg' },
-  open: { label: 'Open', className: 'text-open bg-open-bg' },
+  open: { label: 'Active', className: 'text-open bg-open-bg' },
   closed: { label: 'Closed', className: 'text-closed bg-closed-bg' },
 }
 

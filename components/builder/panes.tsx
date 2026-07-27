@@ -5,38 +5,34 @@ import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
 import { MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
 import { imageAdjustStyle } from '@/lib/image'
+import HeroPanel from '@/components/HeroPanel'
 import WidgetInput from '@/components/WidgetInput'
 import Tooltip from '@/components/Tooltip'
 import { InlineInput, InlineTextArea } from './Inline'
-import { MicroLabel } from './controls'
 import ImageUpload from './ImageUpload'
 
 /* ------------------------------- Welcome --------------------------------- */
 
 export function WelcomeCenter({ form, onChange, onOpenHeroMedia }: { form: Form; onChange: (p: Partial<Form>) => void; onOpenHeroMedia?: () => void }) {
   return (
-    <div className="flex w-full flex-col gap-6 @3xl:flex-row @3xl:items-stretch @3xl:gap-8">
-      <div className="flex flex-1 flex-col justify-center gap-16">
-        {/* Group 1 — title + body */}
-        <div className="flex flex-col gap-2">
-          <InlineTextArea value={form.title} onChange={(v) => onChange({ title: v })} placeholder="What are we testing?" className="px-2 py-1 text-3xl font-semibold leading-tight tracking-tight sm:text-[34px]" />
-          <InlineTextArea value={form.body_copy} onChange={(v) => onChange({ body_copy: v })} placeholder="Add the context voters read before they start…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
-        </div>
-        {/* Group 2 — project brief + USPs/metrics */}
-        <div className="flex flex-col gap-4">
-          <div>
-            <MicroLabel>Project brief</MicroLabel>
-            <InlineTextArea value={form.project_brief} onChange={(v) => onChange({ project_brief: v })} placeholder="Background for the decision…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
-          </div>
-          <div>
-            <MicroLabel>USPs / metrics impacted</MicroLabel>
-            <InlineInput value={form.usps_metrics} onChange={(v) => onChange({ usps_metrics: v })} placeholder="Conversion, clarity…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
-          </div>
-        </div>
+    // Full-bleed two-column hero: the negative margins cancel the canvas card's
+    // padding so the backdrop runs edge to edge, exactly as the voter sees it.
+    // Two columns on desktop only — @4xl (896px) sits above the 768px tablet
+    // canvas, so tablet and mobile both stack.
+    <div className="-mx-[28px] -mb-8 -mt-14 grid w-[calc(100%+56px)] overflow-hidden rounded-[28px] @4xl:h-dvh @4xl:grid-cols-2 @4xl:items-stretch">
+      <div className="flex flex-col justify-center gap-2 overflow-y-auto px-[28px] py-14 @4xl:py-20">
+        <InlineTextArea value={form.title} onChange={(v) => onChange({ title: v })} placeholder="What are we testing?" className="px-2 py-1 text-3xl font-semibold leading-tight tracking-tight sm:text-[34px]" />
+        <InlineTextArea value={form.body_copy} onChange={(v) => onChange({ body_copy: v })} placeholder="Add the context voters read before they start…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
       </div>
-      <div className="w-full @3xl:w-[360px]">
-        <ImageUpload value={form.hero_image_url} onChange={(v) => onChange({ hero_image_url: v })} onClickUpload={onOpenHeroMedia} />
-      </div>
+      {form.hero_image_url ? (
+        <HeroPanel bg={form.hero_bg} className="h-[60vh] @4xl:h-full">
+          <ImageUpload value={form.hero_image_url} onChange={(v) => onChange({ hero_image_url: v })} onClickUpload={onOpenHeroMedia} bare />
+        </HeroPanel>
+      ) : (
+        <div className="px-[28px] pb-10 @4xl:flex @4xl:items-center @4xl:py-14 @4xl:pl-0">
+          <ImageUpload value="" onChange={(v) => onChange({ hero_image_url: v })} onClickUpload={onOpenHeroMedia} />
+        </div>
+      )}
     </div>
   )
 }

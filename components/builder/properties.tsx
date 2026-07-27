@@ -5,6 +5,7 @@ import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
 import { WIDGET_META, PAGE_META, MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL } from '@/lib/embed'
 import { imageAdjustStyle } from '@/lib/image'
+import { HERO_GRADIENTS, HERO_SOLIDS, hasHeroBg, isCustomHeroBg } from '@/lib/hero'
 import { Field, Toggle, TextInput, NumberInput } from './controls'
 import HoverHighlight from '@/components/HoverHighlight'
 
@@ -361,9 +362,97 @@ function ChoicesEditor({ choices, onChange }: { choices: string[]; onChange: (c:
 
 /* -------------------------------- Welcome -------------------------------- */
 
+function Swatch({
+  label,
+  css,
+  selected,
+  onClick,
+}: {
+  label: string
+  css: string
+  selected: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`h-8 w-8 rounded-full border transition ${
+        selected ? 'border-ink ring-2 ring-black/[0.14] ring-offset-1' : 'border-line-strong hover:border-ink/40'
+      }`}
+      style={{ background: css }}
+    />
+  )
+}
+
+function HeroBackdropField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const custom = isCustomHeroBg(value)
+  return (
+    <Group title="Media backdrop">
+      <div className="space-y-3.5">
+        <div>
+          <p className="mb-1.5 text-[13px] text-muted">Gradients</p>
+          <div className="flex flex-wrap gap-2">
+            {HERO_GRADIENTS.map((p) => (
+              <Swatch key={p.value} label={p.label} css={p.css} selected={value === p.value} onClick={() => onChange(p.value)} />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-[13px] text-muted">Solids</p>
+          <div className="flex flex-wrap gap-2">
+            {HERO_SOLIDS.map((p) => (
+              <Swatch key={p.value} label={p.label} css={p.css} selected={value === p.value} onClick={() => onChange(p.value)} />
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label
+            title="Custom colour"
+            className={`relative h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-full border transition ${
+              custom ? 'border-ink ring-2 ring-black/[0.14] ring-offset-1' : 'border-line-strong hover:border-ink/40'
+            }`}
+            style={{
+              background: custom
+                ? value
+                : 'conic-gradient(#ff5f6d,#ffc371,#47e5bc,#4facfe,#c471f5,#ff5f6d)',
+            }}
+          >
+            <input
+              type="color"
+              aria-label="Custom colour"
+              value={custom ? value : '#6b7cff'}
+              onChange={(e) => onChange(e.target.value)}
+              className="absolute inset-0 cursor-pointer opacity-0"
+            />
+          </label>
+          <span className="text-[13px] text-muted">{custom ? value : 'Custom colour'}</span>
+          <button
+            type="button"
+            onClick={() => onChange('none')}
+            className={`ml-auto rounded-[12px] border px-2.5 py-1 text-[13px] font-medium transition ${
+              !hasHeroBg(value)
+                ? 'border-ink bg-ink text-white'
+                : 'border-line-strong text-muted hover:bg-black/[0.03] hover:text-ink'
+            }`}
+          >
+            None
+          </button>
+        </div>
+      </div>
+    </Group>
+  )
+}
+
 export function WelcomeProperties({ form, onChange }: { form: Form; onChange: (p: Partial<Form>) => void }) {
   return (
     <>
+      {form.hero_image_url && <HeroBackdropField value={form.hero_bg} onChange={(v) => onChange({ hero_bg: v })} />}
       <Group>
         <Toggle
           checked={form.show_time_estimate}

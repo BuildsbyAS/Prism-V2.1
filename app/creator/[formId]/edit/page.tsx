@@ -33,9 +33,8 @@ function snapshot(form: Form, pages: Page[], options: Option[], widgets: Widget[
   return JSON.stringify({
     t: form.title,
     b: form.body_copy,
-    pb: form.project_brief,
-    u: form.usps_metrics,
     h: form.hero_image_url,
+    hbg: form.hero_bg,
     ty: form.thank_you_message,
     sr: form.show_results_to_voters,
     rl: form.require_voter_login,
