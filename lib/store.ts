@@ -58,6 +58,7 @@ function newForm(mode: FormMode, creatorId: string): Form {
     usps_metrics: '',
     project_brief: '',
     hero_image_url: '',
+    hero_bg: 'none',
     thank_you_message: '',
     mode,
     status: 'draft',

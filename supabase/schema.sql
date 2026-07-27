@@ -29,6 +29,7 @@ create table if not exists public.forms (
   usps_metrics           text,
   project_brief          text,
   hero_image_url         text,
+  hero_bg                text not null default 'none',           -- backdrop preset behind the hero media
   thank_you_message      text,                                   -- thank-you screen copy
   mode                   text not null default 'simple' check (mode in ('simple','canvas')),
   status                 text not null default 'draft'  check (status in ('draft','open','closed')),

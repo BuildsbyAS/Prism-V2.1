@@ -31,6 +31,8 @@ export interface Form {
   usps_metrics: string
   project_brief: string
   hero_image_url: string
+  /** Backdrop preset rendered behind the hero media — see lib/hero.ts. */
+  hero_bg: string
   thank_you_message: string
   mode: FormMode
   status: FormStatus

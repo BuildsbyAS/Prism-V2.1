@@ -12,12 +12,15 @@ export default function ImageUpload({
   onChange,
   onClickUpload,
   label = 'Hero image / GIF',
+  bare = false,
 }: {
   value: string
   onChange: (url: string) => void
   /** When set, clicking opens this (the media modal) instead of the file dialog. */
   onClickUpload?: () => void
   label?: string
+  /** Drop the frame/crop so the media can float on a HeroPanel backdrop. */
+  bare?: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -47,11 +50,17 @@ export default function ImageUpload({
 
   if (value) {
     return (
-      <div className="group relative w-full overflow-hidden rounded-2xl border border-line @3xl:h-full @3xl:min-h-[440px]">
-        {/* Stacked (tablet/mobile): full width, natural proportions (page scrolls
-            if tall). Desktop column: fills the card height, cropped to focal. */}
+      <div
+        className={
+          bare
+            ? 'group relative flex max-h-full max-w-full'
+            : 'group relative w-full overflow-hidden rounded-2xl border border-line @3xl:h-full @3xl:min-h-[440px]'
+        }
+      >
+        {/* Bare (on a HeroPanel): fit inside the panel box, aspect ratio intact.
+            Framed: full width stacked, cropped to focal in the desktop column. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={value} alt="Hero" className="w-full @3xl:h-full @3xl:object-cover" />
+        <img src={value} alt="Hero" className={bare ? 'block max-h-full max-w-full object-contain' : 'w-full @3xl:h-full @3xl:object-cover'} />
         <div className="absolute inset-x-0 bottom-0 flex gap-2 bg-gradient-to-t from-black/40 to-transparent p-3 opacity-0 transition group-hover:opacity-100">
           <button
             type="button"

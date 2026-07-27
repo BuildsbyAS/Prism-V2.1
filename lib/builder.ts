@@ -108,14 +108,14 @@ export function pageReady(page: Page, options: Option[], widgets: Widget[]): boo
 }
 
 export function readiness(
-  form: Pick<Form, 'title' | 'body_copy' | 'project_brief' | 'usps_metrics' | 'thank_you_message'>,
+  form: Pick<Form, 'title' | 'body_copy' | 'thank_you_message'>,
   pages: Page[],
   options: Option[],
   widgets: Widget[],
 ): Readiness {
-  // The welcome screen is the voter's brief: title, subtitle, project brief and
-  // USPs/metrics are all required before a form can publish.
-  const welcome = Boolean(form.title.trim()) && Boolean(form.body_copy.trim()) && Boolean(form.project_brief.trim()) && Boolean(form.usps_metrics.trim())
+  // The welcome screen is the voter's brief: title and subtitle are both
+  // required before a form can publish.
+  const welcome = Boolean(form.title.trim()) && Boolean(form.body_copy.trim())
   const middle = pages.length >= 1 && pages.some((p) => pageReady(p, options, widgets))
   const thankyou = Boolean(form.thank_you_message.trim())
   return { welcome, middle, thankyou, publishable: welcome && middle }
