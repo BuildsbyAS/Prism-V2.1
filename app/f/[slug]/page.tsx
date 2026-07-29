@@ -393,22 +393,38 @@ export default function VoterPage() {
 
     return (
       <main className="flex min-h-dvh w-full flex-col">
+        {/* Mobile reads in narrative order: first understand the question, then
+            inspect the options, then answer the follow-up and continue. The
+            desktop heading stays in the left column beside the media. */}
+        <div className="u-rise px-6 pt-10 sm:px-10 lg:hidden">
+          <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+          {page.title && (
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
+          )}
+          {page.body && (
+            <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
+          )}
+        </div>
+
         {/* The 40/60 split holds whether or not anything was uploaded: a context
             screen with no media should read exactly like one with it, and
             collapsing to a single column re-centred the copy mid-page — the
             same words jumped position between two steps of the same form. */}
         <div className="grid w-full flex-1 grid-cols-1 lg:grid-cols-[30fr_70fr]">
-          {/* Left — the brief, the choice, the questions, the way on. Ordered
-              second below lg so the media leads on a phone: you look, then judge. */}
+          {/* Left — the brief, questions and way on. Below lg it follows the
+              media; the mobile-only heading above means the question still
+              leads while the feedback controls stay after the options. */}
           <div className="order-2 flex flex-col justify-center px-6 py-10 sm:px-10 lg:order-1 lg:h-dvh lg:overflow-y-auto lg:px-14">
             <div key={page.id} className="u-rise mx-auto w-full max-w-[560px]">
-              <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
-              {page.title && (
-                <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
-              )}
-              {page.body && (
-                <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
-              )}
+              <div className="hidden lg:block">
+                <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+                {page.title && (
+                  <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
+                )}
+                {page.body && (
+                  <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
+                )}
+              </div>
 
               {page.type === 'feedback' &&
                 wids.map((w) => (
