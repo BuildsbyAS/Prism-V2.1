@@ -1,5 +1,7 @@
 'use client'
 
+import { Microphone, Star as StarIcon } from '@phosphor-icons/react'
+
 import { useEffect, useRef, useState } from 'react'
 import type { Widget, AnswerValue } from '@/lib/types'
 import { uploadAsset } from '@/lib/assets'
@@ -179,7 +181,7 @@ function VoiceInput({ value, onChange }: { value: string; onChange: (v: AnswerVa
         </div>
       ) : (
         <button type="button" onClick={start} className="flex w-full items-center justify-center gap-2 rounded-[16px] border border-line-strong px-5 py-2.5 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]">
-          <span aria-hidden="true">🎤</span> Record a voice note
+          <Microphone size={16} aria-hidden="true" /> Record a voice note
         </button>
       )}
       {error && <p className="text-[13px] text-red-600">{error}</p>}
@@ -249,16 +251,16 @@ function Star({ fill }: { fill: number }) {
 }
 
 function StarSvg({ filled }: { filled: boolean }) {
+  // Two weights of the same Phosphor star rather than one path with swapped
+  // fills — an outline star drawn at fill weight reads heavier than the rest of
+  // the set, and `duotone` would bring a second colour the UI doesn't use.
   return (
-    <svg width="30" height="30" viewBox="0 0 24 24" aria-hidden="true" className="block">
-      <path
-        d="M12 2.5l2.9 5.9 6.5.95-4.7 4.58 1.11 6.47L12 17.4l-5.81 3.06 1.11-6.47-4.7-4.58 6.5-.95L12 2.5Z"
-        fill={filled ? '#18191d' : 'none'}
-        stroke={filled ? '#18191d' : '#e3e3e0'}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <StarIcon
+      size={30}
+      weight={filled ? 'fill' : 'regular'}
+      aria-hidden="true"
+      className={`block ${filled ? 'text-ink' : 'text-line-strong'}`}
+    />
   )
 }
 

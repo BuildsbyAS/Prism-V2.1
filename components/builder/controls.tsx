@@ -3,6 +3,8 @@
 // Small form controls shared between the center editors and the right-hand
 // properties panel.
 
+import { ArrowsOut, SlidersHorizontal, Trash } from '@phosphor-icons/react'
+
 export function Field({
   label,
   hint,
@@ -120,38 +122,15 @@ export function MediaIconBtn({
   )
 }
 
-export const EditGlyph = (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path d="M4 8h9M17 8h3M4 16h3M11 16h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    <circle cx="15" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.7" />
-    <circle cx="9" cy="16" r="2.2" stroke="currentColor" strokeWidth="1.7" />
-  </svg>
-)
+/* Phosphor throughout — one library rather than a drawer of hand-rolled paths
+   that drifted in weight and metrics. These three are shared, so they live here
+   and every surface that shows media controls gets the same mark. */
+export const EditGlyph = <SlidersHorizontal size={17} aria-hidden="true" />
 
-export const DeleteGlyph = (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path
-      d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-)
+export const DeleteGlyph = <Trash size={17} aria-hidden="true" />
 
 /** Four corners pushing out — "give this the whole window". */
-export const ExpandGlyph = (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path
-      d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-)
+export const ExpandGlyph = <ArrowsOut size={17} aria-hidden="true" />
 
 export function Segmented<T extends string | number>({
   options,

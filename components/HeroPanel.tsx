@@ -1,8 +1,10 @@
 'use client'
 
+import { ArrowsOut } from '@phosphor-icons/react'
+
 import { HERO_GLYPH_TILE, hasHeroBg, heroBgCss, isHeroGradient } from '@/lib/hero'
 
-/** Fixed inset between the media and the edge of its column, on all four sides. */
+/** Default inset between the media and the edge of its column, on all four sides. */
 const PANEL_PADDING = 40
 
 /**
@@ -28,6 +30,7 @@ export default function HeroPanel({
   bg,
   dither = true,
   className = '',
+  padding = PANEL_PADDING,
   onExpand,
   children,
 }: {
@@ -36,6 +39,9 @@ export default function HeroPanel({
   /** Creator's dither toggle. Only ever applies to gradients. */
   dither?: boolean
   className?: string
+  /** Inset around the media. The dashboard thumbnail is a fraction of the
+   *  welcome screen's size, so 40px there would leave almost no picture. */
+  padding?: number
   /** Offer a full-screen view of the media. See the button below for why it
    *  isn't simply a wrapper around the <img>. */
   onExpand?: () => void
@@ -52,7 +58,7 @@ export default function HeroPanel({
     <div
       className={`group/hero relative isolate flex w-full items-center justify-center overflow-hidden ${className}`}
       style={{
-        padding: PANEL_PADDING,
+        padding,
         ...(painted ? { background: heroBgCss(bg) } : null),
       }}
     >
@@ -89,9 +95,7 @@ export default function HeroPanel({
           aria-label="View hero image full screen"
           className="absolute right-3 top-3 z-20 grid h-8 w-8 place-items-center rounded-lg bg-ink/70 text-white opacity-0 transition hover:bg-ink focus-visible:opacity-100 group-hover/hero:opacity-100 max-sm:opacity-100"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <ArrowsOut size={16} aria-hidden="true" />
         </button>
       )}
     </div>

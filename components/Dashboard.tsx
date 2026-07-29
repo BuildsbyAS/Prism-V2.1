@@ -15,20 +15,43 @@ import {
   type ListedForm,
 } from '@/lib/store'
 import { formName } from '@/lib/builder'
-import { expiryLabel, personInitials, personName } from '@/lib/format'
+import { expiryLabel, personColor, personInitials, personName } from '@/lib/format'
+import {
+  CaretDown,
+  ChartBar,
+  Check,
+  DotsThreeVertical,
+  ListBullets,
+  MagnifyingGlass,
+  PencilSimple,
+  SlidersHorizontal,
+  Sparkle,
+  SquaresFour,
+  Trash,
+  UsersThree,
+  X,
+} from '@phosphor-icons/react'
 import CreatorHeader from '@/components/CreatorHeader'
+import FormThumbnail from '@/components/FormThumbnail'
 import StatusBadge from '@/components/StatusBadge'
+import Tooltip from '@/components/Tooltip'
 import type { FormStatus } from '@/lib/types'
 
 type ViewMode = 'list' | 'card'
 type StatusFilter = 'all' | FormStatus
+/** A pod name, '' for forms with none, or 'all'. */
+type PodFilter = string
 /**
  * Two lists, one layout: your own workspace, and every form the team has
  * published (see getTeamForms). Each is its own route so the header can
  * link between them — this component is the body both routes render.
  */
 export type DashboardTab = 'mine' | 'team'
-const VIEW_STORAGE_KEY = 'prism.dashboard.view'
+// Versioned. The default used to be the list, and anyone who had loaded the
+// dashboard back then has 'list' saved under the old key — a saved value beats a
+// changed default, so cards would never have shown up for them. The bump drops
+// that one stale preference; a choice made from here on still survives a reload.
+const VIEW_STORAGE_KEY = 'prism.dashboard.view.v2'
 
 // The two lists outlive a tab switch, which is now a route change: a remount
 // paints the last snapshot instead of a skeleton, then refreshes underneath.
@@ -39,8 +62,8 @@ const listCache: { mine: DashboardForm[] | null; team: TeamForm[] | null } = {
 
 // The saved view preference lives in localStorage; useSyncExternalStore keeps
 // the server snapshot and the client in step without a hydration gap. Cards are
-// the default — anyone who has already chosen list keeps it, since the stored
-// value wins over this.
+// what you get until you say otherwise — the thumbnail is how a form is
+// recognised, and the list can't show one.
 let viewCache: ViewMode = 'card'
 const viewListeners = new Set<() => void>()
 
@@ -76,7 +99,9 @@ const STATUS_ORDER: Record<FormStatus, number> = { draft: 0, open: 1, closed: 2 
  */
 const ROW_GRID: Record<DashboardTab, string> = {
   mine: 'grid-cols-[84px_minmax(0,1fr)_auto] sm:grid-cols-[84px_minmax(0,1fr)_96px_auto] lg:grid-cols-[84px_minmax(0,1fr)_104px_96px_auto]',
-  team: 'grid-cols-[84px_minmax(0,1fr)_auto] sm:grid-cols-[84px_minmax(0,1fr)_96px_auto] lg:grid-cols-[84px_minmax(0,1fr)_150px_104px_96px_auto]',
+  // Team carries a Pod column: it's how the team feed is navigated, so it earns
+  // a place from sm up rather than waiting for lg like Collaborator and Expires.
+  team: 'grid-cols-[84px_minmax(0,1fr)_auto] sm:grid-cols-[84px_minmax(0,1fr)_112px_96px_auto] lg:grid-cols-[84px_minmax(0,1fr)_112px_150px_104px_96px_auto]',
 }
 
 /** Just the date. The column header carries the "expires" part, and the full
@@ -158,6 +183,9 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
   const [team, setTeam] = useState<TeamForm[] | null>(listCache.team)
   const [creating, setCreating] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  // Team only. '' is the "No pod" bucket — forms published before pods existed,
+  // which are real entries and shouldn't vanish from an unfiltered list.
+  const [podFilter, setPodFilter] = useState<PodFilter>('all')
   const view = useSyncExternalStore(subscribeView, getViewSnapshot, getViewServerSnapshot)
 
   async function handleCreate() {
@@ -266,6 +294,9 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
             onChangeView={setStoredView}
             statusFilter={statusFilter}
             onChangeStatus={setStatusFilter}
+            podFilter={podFilter}
+            onChangePod={setPodFilter}
+            viewerEmail={user?.email ?? null}
             onDelete={tab === 'mine' ? handleDelete : undefined}
             onRename={tab === 'mine' ? handleRename : undefined}
           />
@@ -282,6 +313,9 @@ function Workspace({
   onChangeView,
   statusFilter,
   onChangeStatus,
+  podFilter,
+  onChangePod,
+  viewerEmail,
   onDelete,
   onRename,
 }: {
@@ -290,7 +324,12 @@ function Workspace({
   view: ViewMode
   onChangeView: (v: ViewMode) => void
   statusFilter: StatusFilter
+  podFilter: PodFilter
+  onChangePod: (p: PodFilter) => void
   onChangeStatus: (s: StatusFilter) => void
+  /** Signed-in creator. On your own board no `creator` is attached to a row, so
+   *  this is how the card knows whose form it is. */
+  viewerEmail: string | null
   /** Both omitted in Team, where the list is read-only. */
   onDelete?: (id: string) => void
   onRename?: (id: string, name: string) => void
@@ -309,7 +348,19 @@ function Workspace({
       )
     : items
 
-  const counts = matching.reduce(
+  // Pods come from the data rather than POD_OPTIONS: offering all nine when
+  // seven have nothing in them is a menu of dead ends. '' collects forms
+  // published before pods existed.
+  const podCounts = new Map<string, number>()
+  for (const { form } of matching) podCounts.set(form.pod ?? '', (podCounts.get(form.pod ?? '') ?? 0) + 1)
+  const podChoices = [...podCounts.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
+
+  // Pod narrows before status, so the status counts describe the pod you're
+  // looking at — not the whole feed, which would promise rows you can't see.
+  const inPod =
+    tab === 'team' && podFilter !== 'all' ? matching.filter(({ form }) => (form.pod ?? '') === podFilter) : matching
+
+  const counts = inPod.reduce(
     (acc, { form }) => {
       acc.all += 1
       acc[form.status] += 1
@@ -321,40 +372,99 @@ function Workspace({
   // Always group by status — drafts, then active, then closed — keeping the
   // store's newest-first order within each group. toSorted leaves `items` intact.
   const visible = (
-    statusFilter === 'all' ? matching : matching.filter(({ form }) => form.status === statusFilter)
+    statusFilter === 'all' ? inPod : inPod.filter(({ form }) => form.status === statusFilter)
   ).toSorted((a, b) => STATUS_ORDER[a.form.status] - STATUS_ORDER[b.form.status])
   const filters = STATUS_FILTERS[tab]
   const activeLabel = filters.find((f) => f.value === statusFilter)?.label ?? 'All'
 
   return (
     <>
-      <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
-        <div className="inline-flex flex-wrap items-center gap-1 rounded-full bg-black/[0.04] p-1">
-          {filters.map(({ value, label }) => {
-            const active = statusFilter === value
-            return (
+      {/* The rule that used to sit on the filter bar itself, left behind as its
+          own line — the bar is sticky now, and a top border on it would double
+          up against the header's when the two meet. */}
+      <div className="mt-7 border-t border-line" />
+
+      {/* Filtering is how you navigate a long list, so the controls stay put
+          while it scrolls: pinned directly under the 56px header (top-14), with
+          an opaque background — the header's translucent blur is fine over the
+          page, but rows sliding a few pixels under these controls ghost through
+          it. The negative margins let that background span the container's
+          padding, or rows — which bleed 12px each side — peek out at the edges. */}
+      <div className="sticky top-14 z-30 -mx-4 flex flex-wrap items-center justify-between gap-3 border-b border-line bg-bg px-4 py-4 sm:-mx-6 sm:px-6">
+        {/* Team filters on two axes — pod and status — and a pill row per axis
+            would be two rows of chips competing for the same bar. Dropdowns
+            state the current selection in one line each. My Forms keeps the
+            pills: one axis, four options, all worth seeing at once. */}
+        {tab === 'team' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterMenu
+              label="Pod"
+              value={podFilter}
+              onChange={onChangePod}
+              options={[
+                { value: 'all', label: 'All pods', count: matching.length },
+                ...podChoices.map((pod) => ({
+                  value: pod,
+                  label: pod || 'No pod',
+                  count: podCounts.get(pod) ?? 0,
+                })),
+              ]}
+            />
+            <FilterMenu
+              label="Status"
+              value={statusFilter}
+              onChange={(v) => onChangeStatus(v as StatusFilter)}
+              options={filters.map(({ value, label }) => ({
+                value,
+                label,
+                count: counts[value],
+              }))}
+            />
+            {/* Only once something is actually filtered — a permanent Reset is a
+                control that does nothing most of the time, and the shortest way
+                back to the whole list shouldn't be two menus deep. */}
+            {(podFilter !== 'all' || statusFilter !== 'all') && (
               <button
-                key={value}
                 type="button"
-                onClick={() => onChangeStatus(value)}
-                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition ${
-                  active
-                    ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.06),0_1px_1px_rgba(0,0,0,0.04)]'
-                    : 'text-muted hover:text-ink'
-                }`}
+                onClick={() => {
+                  onChangePod('all')
+                  onChangeStatus('all')
+                }}
+                className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-muted outline-none transition hover:bg-black/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-ink/25"
               >
-                {label}
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums transition ${
-                    active ? 'bg-black/[0.06] text-ink' : 'bg-black/[0.05] text-muted'
+                <X size={12} weight="bold" aria-hidden="true" />
+                Reset
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="inline-flex flex-wrap items-center gap-1 rounded-full bg-black/[0.04] p-1">
+            {filters.map(({ value, label }) => {
+              const active = statusFilter === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => onChangeStatus(value)}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition ${
+                    active
+                      ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.06),0_1px_1px_rgba(0,0,0,0.04)]'
+                      : 'text-muted hover:text-ink'
                   }`}
                 >
-                  {counts[value]}
-                </span>
-              </button>
-            )
-          })}
-        </div>
+                  {label}
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums transition ${
+                      active ? 'bg-black/[0.06] text-ink' : 'bg-black/[0.05] text-muted'
+                    }`}
+                  >
+                    {counts[value]}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <SearchInput value={search} onChange={setSearch} team={tab === 'team'} />
           <ViewToggle view={view} onChange={onChangeView} />
@@ -368,7 +478,7 @@ function Workspace({
       ) : view === 'card' ? (
         <div className="u-stagger mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((item) => (
-            <FormCard key={item.form.id} item={item} onDelete={onDelete} onRename={onRename} />
+            <FormCard key={item.form.id} item={item} viewerEmail={viewerEmail} onDelete={onDelete} onRename={onRename} />
           ))}
         </div>
       ) : (
@@ -397,16 +507,11 @@ function SearchInput({
   const label = team ? 'Search forms or people' : 'Search forms'
   return (
     <div className="relative">
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
+      <MagnifyingGlass
+        size={14}
         aria-hidden="true"
         className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
-      >
-        <path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.35-4.35" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
+      />
       <input
         type="search"
         value={value}
@@ -423,9 +528,7 @@ function SearchInput({
           aria-label="Clear search"
           className="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded-full text-muted transition hover:bg-black/[0.06] hover:text-ink"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          </svg>
+          <X size={12} aria-hidden="true" />
         </button>
       )}
     </div>
@@ -446,9 +549,7 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
             : 'text-muted hover:text-ink'
         }`}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <ListBullets size={15} aria-hidden="true" />
       </button>
       <button
         type="button"
@@ -461,25 +562,24 @@ function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: ViewMode
             : 'text-muted hover:text-ink'
         }`}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v4H4zM14 15h6v4h-6z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <SquaresFour size={15} aria-hidden="true" />
       </button>
     </div>
   )
 }
 
 /** One label/value line in a card — the card's stand-in for a list column. */
+/** A labelled fact on a card — label over value, so two sit side by side. */
 function CardMeta({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-[13px] text-muted">{label}</span>
-      <span className="min-w-0 text-right text-[13px] font-medium text-ink">{children}</span>
+    <div className="min-w-0">
+      <p className="text-[13px] text-muted">{label}</p>
+      <p className="mt-0.5 flex min-w-0 text-[14px] font-medium text-ink">{children}</p>
     </div>
   )
 }
 
-function FormCard({ item, onDelete, onRename }: { item: ListItem; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
+function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; viewerEmail: string | null; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
   const { form, responseCount, creator } = item
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -489,22 +589,63 @@ function FormCard({ item, onDelete, onRename }: { item: ListItem; onDelete?: (id
   // font-sans opts out of the global pixel heading rule — form titles are
   // content, not display type, so they read better in Geist Sans.
   const body = (
-    <h2 className="line-clamp-2 font-sans text-[15px] font-semibold leading-snug tracking-tight">
+    <h2 className="line-clamp-2 font-sans text-[17px] font-semibold leading-snug tracking-tight">
       {title}
     </h2>
   )
+  /**
+   * Everyone on the form: whoever made it, then whoever they added.
+   *
+   * The creator leads and is never omitted — they're a collaborator by
+   * definition, and a stack that hid them on your own board made a shared form
+   * look like it belonged to the person you'd invited. On Team the creator
+   * comes with the row; on your own board it's you, hence `viewerEmail`.
+   *
+   * Deduped, because a creator who also appears in `collaborators` is one
+   * person, and lowercased for that comparison since addresses aren't
+   * case-sensitive.
+   */
+  const owner = creator?.email ?? viewerEmail
+  const faces: { email: string; label: string }[] = []
+  const seen = new Set<string>()
+  for (const email of [...(owner ? [owner] : []), ...(form.collaborators ?? [])]) {
+    const key = email.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    faces.push({
+      email,
+      // "You" matches how the row names the viewer elsewhere.
+      label: viewerEmail && key === viewerEmail.toLowerCase() ? 'You' : personName(email),
+    })
+  }
+
   return (
     // Flat by design: a single hairline carries the card, and hover shifts the
     // border and surface rather than adding elevation. u-stagger makes each card
     // a stacking context, so lift the card while its menu is open (as FormRow does).
+    // No overflow-hidden on the card: the actions menu opens downward out of the
+    // thumbnail and would be clipped by it. The thumbnail clips itself instead.
     <div
-      className={`group flex flex-col rounded-[20px] border bg-card p-4 transition hover:bg-black/[0.015] ${
-        menuOpen ? 'relative z-50 border-line-strong' : 'border-line hover:border-line-strong'
+      className={`group relative flex flex-col rounded-[20px] border bg-card transition hover:bg-black/[0.015] ${
+        menuOpen ? 'z-50 border-line-strong' : 'border-line hover:border-line-strong'
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <StatusBadge status={form.status} />
-        {onDelete && (
+      {/* The form's own hero, at card size — see FormThumbnail. rounded-t-[19px]
+          rather than [20px]: it sits inside the card's 1px border, so matching
+          the outer radius leaves a hairline of card showing at the corners. */}
+      <Link
+        href={href}
+        aria-label={title}
+        className="block aspect-[17/6] w-full overflow-hidden rounded-t-[19px] bg-black/[0.03]"
+      >
+        <FormThumbnail form={form} />
+      </Link>
+
+      {onDelete && (
+        // Over the thumbnail rather than beside the status chip: the chip row is
+        // gone, and a menu floating on the artwork is out of the way of every
+        // other thing on the card.
+        <div className="absolute right-2 top-2 z-10">
           <RowMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}
@@ -512,56 +653,98 @@ function FormCard({ item, onDelete, onRename }: { item: ListItem; onDelete?: (id
             onRename={onRename && (() => setRenaming(true))}
             editHref={form.status === 'draft' ? undefined : `/creator/${form.id}/edit`}
             editLabel={form.status === 'closed' ? 'View form' : 'Edit form'}
-          />
-        )}
-      </div>
-
-      {/* Renaming replaces the link outright — an input nested in one can't be
-          clicked into without following it. */}
-      {renaming && onRename ? (
-        <div className="mt-3 flex-1">
-          <RenameField
-            value={formName(form)}
-            className="font-sans text-[17px] font-semibold leading-snug tracking-tight"
-            onDone={(next) => {
-              setRenaming(false)
-              if (next !== null) onRename(form.id, next)
-            }}
+            onThumbnail
           />
         </div>
-      ) : (
-        <Link href={href} className="mt-3 flex-1">
-          {body}
-        </Link>
       )}
 
-      {/* The list's columns, as label/value lines — so a form reads the same
-          whichever view you're in. Collaborator only where there is one. */}
-      <div className="mt-4 space-y-1.5 border-t border-line pt-3">
-        {creator && (
-          <CardMeta label="Collaborator">
-            <span className="flex justify-end">
-              <CreatorChip email={creator.email} mine={creator.mine} />
-            </span>
-          </CardMeta>
+      <div className="relative flex flex-1 flex-col p-4">
+        {/* Straddles the thumbnail's edge, as in the design — hence the pull-up
+            and the ring, which reads as a cut-out from the card beneath. */}
+        {faces.length > 0 && (
+          <div className="absolute -top-4 right-4 flex">
+            {faces.slice(0, 3).map((f, i) => (
+              /* Names on hover, via the app's own tooltip rather than `title`:
+                 the native one waits about a second and prints the raw address.
+                 The overlap lives on this wrapper — it's the flex item now — and
+                 z-index is a static class per position so Tailwind emits it. */
+              <Tooltip
+                key={f.email}
+                label={f.label}
+                className={`-ml-2 first:ml-0 ${['z-30', 'z-20', 'z-10'][i]}`}
+              >
+                <span
+                  className="u-circle grid h-7 w-7 place-items-center rounded-full text-[11px] font-semibold text-white ring-2 ring-card"
+                  style={{ backgroundColor: personColor(f.email) }}
+                >
+                  {personInitials(f.email)}
+                </span>
+              </Tooltip>
+            ))}
+            {faces.length > 3 && (
+              /* The overflow chip stays neutral — it stands for several people,
+                 so borrowing any one person's colour would be a lie. */
+              <Tooltip
+                label={faces.slice(3).map((f) => f.label).join(', ')}
+                className="-ml-2"
+              >
+                <span className="u-circle grid h-7 w-7 place-items-center rounded-full bg-ink/70 text-[11px] font-semibold text-white ring-2 ring-card">
+                  +{faces.length - 3}
+                </span>
+              </Tooltip>
+            )}
+          </div>
         )}
-        <CardMeta label="Expires">
-          <span className="tabular-nums">{expiryShort(form.expires_at) ?? '—'}</span>
-        </CardMeta>
-        <CardMeta label="Responses">
-          <span className="font-pixel text-[15px] font-semibold leading-none tabular-nums">
-            {responseCount}
-          </span>
-        </CardMeta>
+
+        {/* self-start, or the badge stretches to the card's width: it's a block
+            child of a flex column, which stretches its items by default. */}
+        <div className="self-start">
+          <StatusBadge status={form.status} />
+        </div>
+
+        {/* Renaming replaces the link outright — an input nested in one can't be
+            clicked into without following it. */}
+        {renaming && onRename ? (
+          <div className="mt-3">
+            <RenameField
+              value={formName(form)}
+              className="font-sans text-[17px] font-semibold leading-snug tracking-tight"
+              onDone={(next) => {
+                setRenaming(false)
+                if (next !== null) onRename(form.id, next)
+              }}
+            />
+          </div>
+        ) : (
+          <Link href={href} className="mt-3">
+            {body}
+          </Link>
+        )}
+
+        {/* Two facts, side by side and labelled — the same columns the list view
+            carries, in the shape the card has room for. mt-auto pins them to the
+            bottom so cards with one-line and two-line titles still line up. */}
+        <div className="mt-auto grid grid-cols-2 gap-3 pt-4">
+          <CardMeta label="Expires on">
+            <span className="tabular-nums">{expiryShort(form.expires_at) ?? '—'}</span>
+          </CardMeta>
+          <CardMeta label="POD">
+            <span className="truncate">{form.pod || '—'}</span>
+          </CardMeta>
+        </div>
       </div>
 
       {/* Same one-primary-action rule as the row — see FormRow for the table. */}
-      <div className="mt-4">
+      <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-3">
+        <p className="flex items-baseline gap-1.5">
+          <span className="text-[19px] font-semibold leading-none tabular-nums">{responseCount}</span>
+          <span className="text-[13px] text-muted">{responseCount === 1 ? 'response' : 'responses'}</span>
+        </p>
         {mine ? (
           <Link
             href={form.status === 'draft' ? `/creator/${form.id}/edit` : `/creator/${form.id}/results`}
             aria-label={form.status === 'draft' ? `Edit ${title}` : `Results for ${title}`}
-            className="block rounded-[12px] bg-black/[0.045] py-1.5 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
+            className="rounded-[12px] bg-black/[0.045] px-8 py-2 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
           >
             {form.status === 'draft' ? 'Edit' : 'Results'}
           </Link>
@@ -569,7 +752,7 @@ function FormCard({ item, onDelete, onRename }: { item: ListItem; onDelete?: (id
           <Link
             href={`/creator/${form.id}/preview`}
             aria-label={`Preview ${title}`}
-            className="block rounded-[12px] bg-black/[0.045] py-1.5 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
+            className="rounded-[12px] bg-black/[0.045] px-8 py-2 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
           >
             Preview
           </Link>
@@ -612,6 +795,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
         {creator && <CreatorChip email={creator.email} mine={creator.mine} />}
         <span className="truncate sm:hidden">
           {[
+            tab === 'team' ? form.pod || null : null,
             `${responseCount} ${responseCount === 1 ? 'response' : 'responses'}`,
             expiry,
           ]
@@ -656,6 +840,14 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
         </Link>
       )}
 
+      {/* Pod — Team only. A form published before pods existed has none, and an
+          em dash reads better in a column than an empty cell. */}
+      {tab === 'team' && (
+        <div className="min-w-0 text-[13px] text-muted">
+          <span className="block truncate">{form.pod || '—'}</span>
+        </div>
+      )}
+
       {/* Collaborator — Team only, and only from lg where there's room for it. */}
       {creator && (
         <div className="hidden min-w-0 lg:block">
@@ -670,7 +862,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
       {/* Display face on the number so the counts line up as a scannable column;
           the header labels it, so the cell is just the figure. */}
       <div className="hidden text-right sm:block">
-        <span className="font-pixel text-[15px] font-semibold leading-none tabular-nums">
+        <span className="text-[15px] font-semibold leading-none tabular-nums">
           {responseCount}
         </span>
       </div>
@@ -726,6 +918,125 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
   )
 }
 
+/**
+ * One filter axis, as a menu.
+ *
+ * Native `<select>` was the first cut and looked bolted on: the browser draws
+ * its own control — its own chevron, its own focus ring, its own font metrics —
+ * inside a pill styled by the app, so the two never agreed. This borrows the
+ * vocabulary the dashboard already speaks (see RowMenu): a quiet pill that opens
+ * a bordered card of rows, with the selection ticked and the count trailing it.
+ *
+ * The trigger states what's selected rather than just naming the axis, so a
+ * filtered list explains itself without opening anything.
+ */
+function FilterMenu({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string; count: number }[]
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const selected = options.find((o) => o.value === value) ?? options[0]
+  // 'all' is the resting state; anything else is a filter someone applied, and
+  // the trigger says so without having to be opened.
+  const active = value !== 'all'
+
+  useEffect(() => {
+    if (!open) return
+    function onPointerDown(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      // Escape hands focus back to the control you opened, not to the document.
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`Filter by ${label.toLowerCase()}`}
+        className={`inline-flex h-9 items-center gap-2 rounded-full px-3.5 text-[13px] outline-none transition focus-visible:ring-2 focus-visible:ring-ink/25 ${
+          open || active
+            ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.09]'
+            : 'bg-black/[0.04] text-ink hover:bg-black/[0.07]'
+        }`}
+      >
+        <span className="font-medium text-muted">{label}</span>
+        <span className="font-semibold">{selected?.label ?? '—'}</span>
+        <CaretDown
+          size={12}
+          weight="bold"
+          aria-hidden="true"
+          className={`text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label={label}
+          // Same card as RowMenu — one menu surface across the dashboard.
+          className="u-popover absolute left-0 top-full z-50 mt-1.5 max-h-[320px] min-w-[220px] origin-top overflow-y-auto rounded-[14px] border border-line bg-card p-1 shadow-[0_4px_12px_-2px_rgba(0,0,0,0.08),0_16px_40px_-12px_rgba(0,0,0,0.22)]"
+        >
+          {options.map((o) => {
+            const isSelected = o.value === value
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => {
+                  onChange(o.value)
+                  setOpen(false)
+                  triggerRef.current?.focus()
+                }}
+                // A row with nothing behind it still selects — it's how you find
+                // out the pod is empty — but it reads as the dead end it is.
+                className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] outline-none transition hover:bg-black/[0.04] focus-visible:bg-black/[0.04] ${
+                  o.count === 0 && !isSelected ? 'text-muted' : 'text-ink'
+                }`}
+              >
+                {/* The tick keeps its column whether or not it's drawn, so the
+                    labels line up instead of jumping by an icon's width. */}
+                <span className="grid w-3.5 flex-none place-items-center">
+                  {isSelected && <Check size={13} weight="bold" aria-hidden="true" />}
+                </span>
+                <span className={`min-w-0 flex-1 truncate ${isSelected ? 'font-semibold' : 'font-medium'}`}>
+                  {o.label}
+                </span>
+                <span className="flex-none text-[12px] tabular-nums text-muted">{o.count}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Column headers — the only thing naming the date and count columns. */
 function ListHeader({ tab, showCreator }: { tab: DashboardTab; showCreator: boolean }) {
   const cell = 'text-[11px] font-semibold uppercase tracking-[0.06em] text-muted'
@@ -733,6 +1044,7 @@ function ListHeader({ tab, showCreator }: { tab: DashboardTab; showCreator: bool
     <div className={`-mx-3 hidden ${ROW_GRID[tab]} items-center gap-4 px-3 pb-2 sm:grid`}>
       <span className={cell}>Status</span>
       <span className={cell}>Form</span>
+      {tab === 'team' && <span className={cell}>Pod</span>}
       {showCreator && <span className={`hidden lg:block ${cell}`}>Collaborator</span>}
       <span className={`hidden text-right lg:block ${cell}`}>Expires</span>
       <span className={`text-right ${cell}`}>Responses</span>
@@ -798,6 +1110,7 @@ function RowMenu({
   editHref,
   editLabel = 'Edit form',
   resultsHref,
+  onThumbnail = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -808,6 +1121,9 @@ function RowMenu({
   editLabel?: string
   /** Rendered only under `sm`, where the row hides its primary button. */
   resultsHref?: string
+  /** Sitting on a card's artwork rather than a white surface, where a muted
+   *  glyph on an unknown background could land invisible on either. */
+  onThumbnail?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
 
@@ -839,17 +1155,17 @@ function RowMenu({
         // `hover:` only matches under `@media (hover: hover)`, so a hover-reveal
         // alone leaves this button permanently invisible on touch — keep it
         // shown under `sm`, where there is no other route to these actions.
-        className={`grid h-8 w-8 place-items-center rounded-full text-muted transition hover:bg-black/[0.05] hover:text-ink ${
-          open
-            ? 'bg-black/[0.05] text-ink opacity-100'
-            : 'opacity-0 max-sm:opacity-100 group-hover:opacity-100 focus-visible:opacity-100'
+        className={`grid h-8 w-8 place-items-center rounded-full transition ${
+          onThumbnail
+            ? `bg-black/45 text-white backdrop-blur-sm hover:bg-black/65 ${open ? 'opacity-100' : 'opacity-0 max-sm:opacity-100 group-hover:opacity-100 focus-visible:opacity-100'}`
+            : `text-muted hover:bg-black/[0.05] hover:text-ink ${
+                open
+                  ? 'bg-black/[0.05] text-ink opacity-100'
+                  : 'opacity-0 max-sm:opacity-100 group-hover:opacity-100 focus-visible:opacity-100'
+              }`
         }`}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <circle cx="12" cy="5" r="1.6" />
-          <circle cx="12" cy="12" r="1.6" />
-          <circle cx="12" cy="19" r="1.6" />
-        </svg>
+        <DotsThreeVertical size={16} weight="bold" aria-hidden="true" />
       </button>
 
       {open && (
@@ -864,9 +1180,7 @@ function RowMenu({
               onClick={() => onOpenChange(false)}
               className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] font-medium text-ink transition hover:bg-black/[0.04] sm:hidden"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M5 19V9m7 10V5m7 14v-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-              </svg>
+              <ChartBar size={15} aria-hidden="true" />
               See results
             </Link>
           )}
@@ -877,11 +1191,7 @@ function RowMenu({
               onClick={() => onOpenChange(false)}
               className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] font-medium text-ink transition hover:bg-black/[0.04]"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M4 8h9M17 8h3M4 16h3M11 16h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                <circle cx="15" cy="8" r="2" stroke="currentColor" strokeWidth="1.6" />
-                <circle cx="9" cy="16" r="2" stroke="currentColor" strokeWidth="1.6" />
-              </svg>
+              <SlidersHorizontal size={15} aria-hidden="true" />
               {editLabel}
             </Link>
           )}
@@ -895,9 +1205,7 @@ function RowMenu({
               }}
               className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] font-medium text-ink transition hover:bg-black/[0.04]"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M4 20h16M5 15.5 15.5 5a2.1 2.1 0 0 1 3 3L8 18.5l-4 1z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <PencilSimple size={15} aria-hidden="true" />
               Rename
             </button>
           )}
@@ -910,9 +1218,7 @@ function RowMenu({
             }}
             className="flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] font-medium text-red-600 transition hover:bg-red-50"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <Trash size={15} aria-hidden="true" />
             Delete form
           </button>
         </div>
@@ -924,8 +1230,10 @@ function RowMenu({
 function EmptyState({ onCreate, creating }: { onCreate: () => void; creating: boolean }) {
   return (
     <div className="mt-10 flex flex-col items-center rounded-[26px] border border-dashed border-line-strong bg-black/[0.015] px-6 py-16 text-center">
-      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-black/[0.06] text-xl">✨</div>
-      <h2 className="mt-4 text-[17px] font-semibold tracking-tight">No forms yet</h2>
+      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-black/[0.06]">
+        <Sparkle size={22} aria-hidden="true" />
+      </div>
+      <h2 className="mt-4 font-sans text-[17px] font-semibold tracking-tight">No forms yet</h2>
       <p className="mt-1.5 max-w-sm text-[15px] leading-relaxed text-muted">
         Build your first feedback form — a welcome screen, options for voters to compare, and the
         questions you want answered.
@@ -950,8 +1258,10 @@ function EmptyState({ onCreate, creating }: { onCreate: () => void; creating: bo
 function TeamEmptyState() {
   return (
     <div className="mt-10 flex flex-col items-center rounded-[26px] border border-dashed border-line-strong bg-black/[0.015] px-6 py-16 text-center">
-      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-black/[0.06] text-xl">🌍</div>
-      <h2 className="mt-4 text-[17px] font-semibold tracking-tight">Nothing published yet</h2>
+      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-black/[0.06]">
+        <UsersThree size={22} aria-hidden="true" />
+      </div>
+      <h2 className="mt-4 font-sans text-[17px] font-semibold tracking-tight">Nothing published yet</h2>
       <p className="mt-1.5 max-w-sm text-[15px] leading-relaxed text-muted">
         Every form the team publishes lands here — active ones to vote on, closed ones to look back
         at. Publish yours and it becomes the first.

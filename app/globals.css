@@ -54,7 +54,13 @@ body {
    rather than per-heading classes so new headings inherit it automatically.
    It lives in `@layer base` on purpose: unlayered rules outrank every layer
    regardless of specificity, so without the layer a `font-sans` utility could
-   not override this. Layered, utilities win and a heading can opt back out. */
+   not override this. Layered, utilities win and a heading can opt back out.
+
+   Which is what every heading of 20px or under does — add `font-sans`. The
+   pixel face is a display face: its square terminals and single weight carry a
+   40px page title, and turn to mush at the size of a card heading or a section
+   label. The cut-off is a rule, not a preference — a 17px dialog title in the
+   display face reads as a rendering fault, not as branding. */
 @layer base {
   h1,
   h2,
@@ -334,6 +340,24 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 }
 .u-rise {
   animation: u-rise 420ms var(--ease-out) both;
+}
+
+/* View switch — Editor · Preview · Results. The header is the same bar on all
+   three, so only the body announces the change: it settles in from a few pixels
+   below rather than cutting. Shorter and shallower than u-rise, which moves a
+   whole screen; this is a swap inside one. */
+@keyframes u-view {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.u-view {
+  animation: u-view 240ms var(--ease-out) both;
 }
 
 /* Accessibility: honour reduced-motion — keep opacity fades, drop movement. */

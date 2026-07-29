@@ -5,6 +5,7 @@ import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
 import { MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
 import { brightnessStyle } from '@/lib/image'
+import { Plus, Trash, X } from '@phosphor-icons/react'
 import HeroPanel from '@/components/HeroPanel'
 import WidgetInput from '@/components/WidgetInput'
 import Tooltip from '@/components/Tooltip'
@@ -155,7 +156,7 @@ export function PageCenter({
               onClick={onAddOption}
               className="flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-line-strong text-[14px] font-medium text-muted transition hover:border-ink hover:text-ink"
             >
-              <span className="text-2xl leading-none">+</span>
+              <Plus size={22} aria-hidden="true" />
               <span className="mt-1.5">{feedback ? 'Add option' : 'Add media'}</span>
             </button>
           )}
@@ -233,7 +234,7 @@ function OptionCard({
               aria-label="Delete option"
               className="text-muted transition hover:text-red-600"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <Trash size={16} aria-hidden="true" />
             </button>
           </Tooltip>
         </div>
@@ -256,7 +257,7 @@ function OptionCard({
                 aria-label="Delete media"
                 className="grid h-8 w-8 place-items-center rounded-lg bg-white/90 text-muted shadow-sm transition hover:text-red-600"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                <Trash size={16} aria-hidden="true" />
               </button>
             </Tooltip>
           </div>
@@ -271,10 +272,12 @@ function OptionCard({
               <MediaIconBtn tip="Expand" onClick={() => onZoom(option)}>
                 {ExpandGlyph}
               </MediaIconBtn>
-              {/* Edit and delete are the rest of the vocabulary — swapping the
-                  media is one click deeper, in the properties rail that Edit
-                  opens, rather than another button competing for the same spot. */}
-              <MediaIconBtn tip="Edit" onClick={onSelect}>
+              {/* Edit opens the media editor itself. It used to only select the
+                  card, which put this option's settings in the properties rail —
+                  and on a page whose rail is already full of page settings, that
+                  landed below the fold and read as a dead button. Selecting still
+                  happens (openMedia does both), so the rail follows along. */}
+              <MediaIconBtn tip="Edit" onClick={onOpenMedia}>
                 {EditGlyph}
               </MediaIconBtn>
               {/* Clearing the URL leaves an empty, still-named option — which is
@@ -373,7 +376,7 @@ function InputCard({
         aria-label="Delete input"
         className="absolute right-4 top-0 z-10 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg bg-ink text-white opacity-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.4)] transition hover:bg-black group-hover:opacity-100"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        <X size={14} aria-hidden="true" />
       </button>
       {showTitle && (
         <div className="min-w-0" onClick={(e) => e.stopPropagation()}>

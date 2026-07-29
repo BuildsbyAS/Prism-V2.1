@@ -335,14 +335,29 @@ create unique index if not exists responses_one_per_account
 -- anonymous voters is no longer needed.
 drop function if exists public.has_responded(uuid, text);
 
--- Voting is authenticated-only, and you may only file a response as yourself.
--- This is what stops a hand-made request voting on someone else's behalf — the
--- unique index alone would not.
+-- Voting is authenticated-only, you may only file a response as yourself, and
+-- only against a form that is actually taking them. The first clause stops a
+-- hand-made request voting on someone else's behalf; the `exists` stops one
+-- landing on a draft, a closed form, or one past its expiry.
+--
+-- The status check lives here rather than only in the client because the
+-- creator's own preview posts to the same endpoint: a draft they were still
+-- writing would otherwise collect responses from its own preview, and the
+-- tally on their dashboard would count rehearsals as results.
 drop policy if exists "anyone insert responses" on public.responses;
 drop policy if exists "signed-in insert own response" on public.responses;
 create policy "signed-in insert own response" on public.responses for insert
   to authenticated
-  with check (voter_id = auth.uid() and public.is_noon_user());
+  with check (
+    voter_id = auth.uid()
+    and public.is_noon_user()
+    and exists (
+      select 1 from public.forms f
+       where f.id = form_id
+         and f.status = 'open'
+         and (f.expires_at is null or f.expires_at > now())
+    )
+  );
 
 -- So a voter can be told "you've already responded" before filling the form in.
 -- Scoped to their own rows: it reveals nothing about anyone else's answers.

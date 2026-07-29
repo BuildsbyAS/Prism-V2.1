@@ -1,5 +1,7 @@
 'use client'
 
+import { Bell } from '@phosphor-icons/react'
+
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getUpdates, markAllResponsesSeen, markResponsesSeen, type FormUpdate } from '@/lib/store'
@@ -144,16 +146,5 @@ export default function UpdatesMenu() {
 }
 
 function BellIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M18 8a6 6 0 1 0-12 0c0 4-1.5 5.5-2 6h16c-.5-.5-2-2-2-6Z"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path d="M10.5 18a1.8 1.8 0 0 0 3 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    </svg>
-  )
+  return <Bell size={18} aria-hidden="true" />
 }

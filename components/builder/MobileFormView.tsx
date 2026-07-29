@@ -1,5 +1,7 @@
 'use client'
 
+import { CaretLeft, Info } from '@phosphor-icons/react'
+
 import Link from 'next/link'
 import type { Form } from '@/lib/types'
 import { formName } from '@/lib/builder'
@@ -28,9 +30,7 @@ export default function MobileFormView({ form, published }: { form: Form; publis
             aria-label="Back to forms"
             className="grid h-8 w-8 flex-none place-items-center rounded-full text-muted transition hover:bg-black/[0.05] hover:text-ink"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <CaretLeft size={18} aria-hidden="true" />
           </Link>
           <p className="min-w-0 flex-1 truncate text-[15px] font-medium">{name}</p>
           {published && (
@@ -45,10 +45,7 @@ export default function MobileFormView({ form, published }: { form: Form; publis
       </header>
 
       <div className="flex items-start gap-2.5 border-b border-line bg-black/[0.02] px-4 py-3">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="mt-px flex-none text-muted">
-          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
-          <path d="M12 11v5m0-8.2v.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
+        <Info size={16} aria-hidden="true" className="mt-px flex-none text-muted" />
         <p className="text-[13px] leading-relaxed text-muted">
           You&rsquo;re viewing this form. Editing needs a larger screen — open Prism on a desktop to
           make changes.

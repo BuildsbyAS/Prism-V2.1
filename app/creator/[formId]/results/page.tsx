@@ -6,10 +6,23 @@ import Link from 'next/link'
 import type { FullForm, FormResults } from '@/lib/types'
 import { getFullForm, getResults, getFormVoters, markResponsesSeen, type FormVoter } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
-import { WIDGET_META, formName } from '@/lib/builder'
-import { personName, timeAgo } from '@/lib/format'
+import { WIDGET_META, formName, hasResults } from '@/lib/builder'
+import { expiryLabel, personName, timeAgo } from '@/lib/format'
 import FormHeader from '@/components/builder/FormHeader'
+import { ArrowLeft, ArrowUpRight, CaretUp } from '@phosphor-icons/react'
 import StatusBadge from '@/components/StatusBadge'
+import {
+  ChartCard,
+  DistributionColumns,
+  HeroFigure,
+  NominalBars,
+  ShareBar,
+  ShareLegend,
+  StatTile,
+  optionColor,
+  type Slice,
+} from '@/components/Charts'
+import { ratingBuckets, sliderBuckets, toBuckets } from '@/components/EndScreen'
 
 export default function ResultsPage() {
   const params = useParams<{ formId: string }>()
@@ -43,14 +56,44 @@ export default function ResultsPage() {
       .catch(() => setVoters([]))
   }, [formId, isCreator])
 
+  // A draft has never collected anything, so there is nothing here to read. The
+  // tab is hidden for one (see hasResults), but the URL is still typeable and
+  // an old link still resolves — say so rather than rendering empty totals.
+  if (full && !hasResults(full.form)) {
+    return (
+      <>
+        <FormHeader
+          formId={formId}
+          tab="results"
+          name={formName(full.form)}
+          canEdit={isCreator}
+          canSeeResults={false}
+          status={<StatusBadge status={full.form.status} />}
+        />
+        <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
+          <h1 className="font-sans text-xl font-semibold">No results yet</h1>
+          <p className="mt-2 text-[15px] text-muted">
+            This form is still a draft. Publish it and responses will show up here.
+          </p>
+          <Link
+            href={`/creator/${formId}/edit`}
+            className="mt-5 inline-flex items-center gap-1.5 rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white"
+          >
+            <ArrowLeft size={14} aria-hidden="true" /> Back to the editor
+          </Link>
+        </main>
+      </>
+    )
+  }
+
   if (missing) {
     return (
       <>
         <FormHeader formId={formId} tab="results" canEdit={false} />
         <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
-          <h1 className="text-xl font-semibold">Form not found</h1>
+          <h1 className="font-sans text-xl font-semibold">Form not found</h1>
           <Link href="/creator" className="mt-5 inline-block rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white">
-            ← Back to forms
+            <ArrowLeft size={14} aria-hidden="true" /> Back to forms
           </Link>
         </main>
       </>
@@ -67,9 +110,10 @@ export default function ResultsPage() {
         tab="results"
         name={full ? formName(full.form) : null}
         canEdit={isCreator}
+        canSeeResults
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       />
-      <main className="mx-auto w-full max-w-[820px] px-4 py-10 sm:px-6 sm:py-12">
+      <main className="u-view mx-auto w-full max-w-[820px] px-4 py-10 sm:px-6 sm:py-12">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">
             {(full && formName(full.form)) || 'Untitled form'}
@@ -79,12 +123,24 @@ export default function ResultsPage() {
           )}
         </div>
 
-        {/* Overview */}
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Responses" value={results ? String(results.total) : '—'} />
-          <Stat label="First" value={results?.firstAt ? timeAgo(results.firstAt) : '—'} />
-          <Stat label="Last" value={results?.lastAt ? timeAgo(results.lastAt) : '—'} />
-          <Stat label="Status" value={full ? full.form.status : '—'} />
+        {/* The report leads with its one number. Four equal tiles gave the count
+            the same weight as the timestamps beside it — but "how many people
+            answered" decides whether any of the rest is worth reading, so it
+            takes the hero and the others become its footnotes. */}
+        <div className="mt-6 flex flex-wrap items-end justify-between gap-6 border-b border-line pb-6">
+          <HeroFigure
+            label="Responses"
+            value={results ? String(results.total) : '—'}
+            sub={
+              results?.firstAt && results?.lastAt
+                ? `First ${timeAgo(results.firstAt)} · latest ${timeAgo(results.lastAt)}`
+                : undefined
+            }
+          />
+          <div className="grid flex-1 grid-cols-2 gap-3 sm:max-w-[400px]">
+            <StatTile label="Pod" value={full?.form.pod || '—'} />
+            <StatTile label="Closes" value={(full?.form.expires_at && expiryLabel(full.form.expires_at)) || '—'} />
+          </div>
         </div>
 
         {results && results.total === 0 && (
@@ -97,7 +153,7 @@ export default function ResultsPage() {
                 target="_blank"
                 className="mt-4 inline-block rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-semibold transition hover:bg-black/[0.03]"
               >
-                Open voter link ↗
+                Open voter link <ArrowUpRight size={14} aria-hidden="true" />
               </Link>
             )}
           </div>
@@ -105,30 +161,63 @@ export default function ResultsPage() {
 
         {full && results && results.total > 0 && (
           <div className="mt-8 space-y-8">
-            {/* Who responded — creator only. */}
-            {isCreator && voters && voters.length > 0 && <Respondents full={full} voters={voters} />}
-
-            {/* Option split */}
-            {full.options.length > 0 && (
-              <Section title="Option split">
-                {full.options.map((o) => {
-                  const n = results.optionCounts[o.id] ?? 0
-                  const pct = results.total ? Math.round((n / results.total) * 100) : 0
-                  return <Bar key={o.id} label={o.name} pct={pct} n={n} />
-                })}
-              </Section>
-            )}
+            {/* One chart per comparison rather than one list of every option in
+                the form: two Get Vote pages are two separate questions, and
+                pooling their options into a single ranking compares things that
+                were never on screen together. */}
+            {full.pages
+              .filter((p) => p.type === 'feedback')
+              .map((page) => {
+                const opts = full.options.filter((o) => o.page_id === page.id)
+                if (opts.length === 0) return null
+                const slices: Slice[] = opts.map((o, i) => ({
+                  id: o.id,
+                  label: o.name,
+                  value: results.optionCounts[o.id] ?? 0,
+                  color: optionColor(i),
+                }))
+                const voted = slices.reduce((sum, sl) => sum + sl.value, 0)
+                const lead = slices.reduce((best, sl) => (sl.value > best.value ? sl : best), slices[0])
+                return (
+                  <ChartCard
+                    key={page.id}
+                    title={page.title || 'Comparison'}
+                    meta={voted ? `${voted} ${voted === 1 ? 'vote' : 'votes'}` : 'No votes yet'}
+                  >
+                    <div className="space-y-3.5">
+                      <ShareBar slices={slices} total={voted} />
+                      <ShareLegend slices={slices} total={voted} leadId={lead.value > 0 ? lead.id : null} />
+                    </div>
+                  </ChartCard>
+                )
+              })}
 
             {/* Per-widget */}
-            {results.widgets.map((b) => (
-              <Section key={b.widget.id} title={b.widget.config.label || WIDGET_META[b.widget.type].label}>
+            {results.widgets.map((b) => {
+              // Written answers are counted from what actually came back (a blank
+              // one isn't an answer); everything else is counted from the tally,
+              // or a multiple choice reports "0 answers" beside its own bars.
+              const answered = b.widget.type === 'text' || b.widget.type === 'voice' ? b.textAnswers.length : b.count
+              return (
+              <ChartCard
+                key={b.widget.id}
+                title={b.widget.config.label || WIDGET_META[b.widget.type].label}
+                meta={
+                  b.average !== null
+                    ? `Average ${b.average} · ${answered} ${answered === 1 ? 'answer' : 'answers'}`
+                    : `${answered} ${answered === 1 ? 'answer' : 'answers'}`
+                }
+              >
                 {b.widget.type === 'voice' ? (
                   <ul className="space-y-2">
                     {b.textAnswers.length === 0 && <li className="text-[14px] text-muted">No voice responses.</li>}
                     {b.textAnswers.map((t) => (
                       <li key={t.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3.5 py-2.5">
                         <audio src={t.value} controls className="h-9 w-full min-w-0 max-w-[320px]" />
-                        <span className="flex-none rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">▲ {t.upvotes}</span>
+                        <span className="inline-flex flex-none items-center gap-1 rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">
+                          <CaretUp size={11} weight="bold" aria-hidden="true" />
+                          {t.upvotes}
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -138,39 +227,38 @@ export default function ResultsPage() {
                     {b.textAnswers.map((t) => (
                       <li key={t.id} className="flex items-start justify-between gap-3 rounded-xl border border-line px-3.5 py-2.5 text-sm leading-relaxed">
                         <span>{t.value}</span>
-                        <span className="flex-none rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">▲ {t.upvotes}</span>
+                        <span className="inline-flex flex-none items-center gap-1 rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">
+                          <CaretUp size={11} weight="bold" aria-hidden="true" />
+                          {t.upvotes}
+                        </span>
                       </li>
                     ))}
                   </ul>
+                ) : b.widget.type === 'rating' ? (
+                  // Ratings are an ordered scale, so the shape of the answer is
+                  // the answer — columns show that at a glance where a stack of
+                  // rows shows only lengths.
+                  <DistributionColumns buckets={ratingBuckets(b.distribution)} unit="rating" />
+                ) : b.widget.type === 'slider' ? (
+                  <DistributionColumns
+                    buckets={sliderBuckets(b.distribution, b.widget.config.min ?? 0, b.widget.config.max ?? 100)}
+                    unit="answer"
+                  />
                 ) : (
-                  <>
-                    {b.average !== null && (
-                      <p className="mb-3 text-[14px] text-muted">
-                        Average: <span className="font-medium text-ink">{b.average}</span> · {b.count} answers
-                      </p>
-                    )}
-                    {Object.entries(b.distribution)
-                      .sort((a, c) => (a[0] < c[0] ? -1 : 1))
-                      .map(([k, n]) => (
-                        <Bar key={k} label={k} pct={b.count ? Math.round((n / b.count) * 100) : 0} n={n} />
-                      ))}
-                  </>
+                  <NominalBars buckets={toBuckets(b.distribution)} total={b.count} />
                 )}
-              </Section>
-            ))}
+              </ChartCard>
+              )
+            })}
+
+            {/* Who responded — creator only, and last: it's the detail behind
+                the charts, not the headline. A dozen rows of names above the
+                vote buried the answer the page exists to give. */}
+            {isCreator && voters && voters.length > 0 && <Respondents full={full} voters={voters} />}
           </div>
         )}
       </main>
     </>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-line bg-card p-4">
-      <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">{label}</p>
-      <p className="mt-1 text-lg font-semibold tracking-tight capitalize">{value}</p>
-    </div>
   )
 }
 
@@ -189,9 +277,9 @@ function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) 
     id === 'tie' ? 'No preference' : full.options.find((o) => o.id === id)?.name || '—'
 
   return (
-    <section className="rounded-[26px] border border-line bg-card p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] sm:p-6">
+    <section className="rounded-[26px] border border-line bg-card p-5 sm:p-6">
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="font-sans text-sm font-semibold">
           Respondents <span className="ml-1 font-normal text-muted tabular-nums">{voters.length}</span>
         </h2>
         {/* Said plainly: this is the one part of the page that names people, and
@@ -250,27 +338,4 @@ function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) 
 
 function Th({ children }: { children: React.ReactNode }) {
   return <th className="pb-2 pr-3 text-[13px] font-medium text-muted">{children}</th>
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-[26px] border border-line bg-card p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] sm:p-6">
-      <h2 className="mb-4 text-sm font-semibold">{title}</h2>
-      <div className="space-y-3">{children}</div>
-    </section>
-  )
-}
-
-function Bar({ label, pct, n }: { label: string; pct: number; n: number }) {
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-sm">
-        <span className="font-medium">{label}</span>
-        <span className="tabular-nums text-muted">{pct}% · {n}</span>
-      </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-black/[0.06]">
-        <div className="h-full rounded-full bg-ink transition-all duration-500" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
 }

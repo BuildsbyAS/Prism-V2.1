@@ -39,7 +39,21 @@ export interface DashboardForm {
  */
 export type ListedForm = Pick<
   Form,
-  'id' | 'slug' | 'name' | 'title' | 'testing_question' | 'status' | 'creator_id' | 'expires_at'
+  | 'id'
+  | 'slug'
+  | 'name'
+  | 'title'
+  | 'testing_question'
+  | 'status'
+  | 'creator_id'
+  | 'expires_at'
+  | 'pod'
+  | 'collaborators'
+  // The dashboard card's thumbnail is the form's own welcome hero, on the
+  // backdrop the creator picked for it.
+  | 'hero_image_url'
+  | 'hero_bg'
+  | 'hero_dither'
 >
 
 export interface TeamForm {
@@ -216,6 +230,15 @@ interface TeamRow {
   /** Optional: older deployments of the team_forms() RPC don't select it, and
    *  the list simply shows no expiry rather than breaking. */
   expires_at?: string | null
+  /** Same — a form published before pods existed has none, which the Team list
+   *  buckets under "No pod" rather than hiding. */
+  pod?: string | null
+  /** Same again, for the card thumbnail: an RPC that doesn't select these hands
+   *  back a form with no hero, which falls through to the placeholder art. */
+  hero_image_url?: string | null
+  hero_bg?: string | null
+  hero_dither?: boolean | null
+  collaborators?: string[] | null
 }
 
 /** Demo mode has no accounts, so a creator id doubles as their address. */
@@ -248,6 +271,11 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         status: r.status,
         creator_id: r.creator_id,
         expires_at: r.expires_at ?? null,
+        pod: r.pod ?? '',
+        collaborators: r.collaborators ?? [],
+        hero_image_url: r.hero_image_url ?? '',
+        hero_bg: r.hero_bg ?? 'none',
+        hero_dither: r.hero_dither ?? true,
       },
       // count() arrives as a bigint, which PostgREST may serialise as a string.
       responseCount: Number(r.response_count ?? 0),
@@ -558,6 +586,23 @@ export const VOTING_REQUIRES_LOGIN = isSupabaseConfigured
 /** Thrown when a submit is attempted without a signed-in account. */
 export const LOGIN_REQUIRED = 'login-required'
 
+/**
+ * Thrown when the form isn't taking responses — a draft, a closed form, or one
+ * past its expiry. Chiefly this is what stops a creator's own preview of an
+ * unpublished form from landing a real response in their tally.
+ */
+export const FORM_NOT_ACCEPTING = 'form-not-accepting'
+
+export function isFormNotAccepting(e: unknown): boolean {
+  return e instanceof Error && e.message === FORM_NOT_ACCEPTING
+}
+
+/** A form takes responses only while it is published and unexpired. */
+export function acceptsResponses(form: Pick<Form, 'status' | 'expires_at'>): boolean {
+  if (form.status !== 'open') return false
+  return !form.expires_at || Date.parse(form.expires_at) > Date.now()
+}
+
 export function isLoginRequired(e: unknown): boolean {
   return e instanceof Error && e.message === LOGIN_REQUIRED
 }
@@ -622,6 +667,16 @@ export async function submitResponse(
     // Belt to the RLS policy's braces: the insert would be rejected anyway, but
     // failing here gives the caller a reason it can act on.
     if (!who.userId) throw new Error(LOGIN_REQUIRED)
+    // Same reason, for status: RLS refuses a draft or closed form, but a bare
+    // "insert failed" tells the voter nothing.
+    const { data: target } = await supabase
+      .from('forms')
+      .select('status,expires_at')
+      .eq('id', formId)
+      .maybeSingle()
+    if (!target || !acceptsResponses(target as Pick<Form, 'status' | 'expires_at'>)) {
+      throw new Error(FORM_NOT_ACCEPTING)
+    }
     const { error } = await supabase.from('responses').insert({
       id: responseId,
       form_id: formId,
@@ -644,8 +699,12 @@ export async function submitResponse(
   }
 
   const db = readDemo()
-  // Demo mode: no accounts and no unique index, so the per-browser rule stands
-  // in and is enforced here.
+  // Demo mode has no RLS, so the same rule is enforced here: only a published,
+  // unexpired form takes responses.
+  const target = db.forms.find((f) => f.id === formId)
+  if (!target || !acceptsResponses(target)) throw new Error(FORM_NOT_ACCEPTING)
+  // No accounts and no unique index either, so the per-browser rule stands in
+  // and is enforced here.
   if (db.responses.some((r) => r.form_id === formId && r.voter_session_id === who.sessionId)) {
     throw new Error(ALREADY_RESPONDED)
   }

@@ -1,3 +1,6 @@
+// The /ssr entry: this page is a server component, and Phosphor's default entry
+// builds on React context, which only exists on the client.
+import { ArrowRightIcon as ArrowRight } from '@phosphor-icons/react/ssr'
 import Link from 'next/link'
 
 export default function Home() {
@@ -20,7 +23,7 @@ export default function Home() {
           href="/creator"
           className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
         >
-          Go to your workspace →
+          Go to your workspace <ArrowRight size={15} aria-hidden="true" />
         </Link>
         <Link
           href="/login"
@@ -42,7 +45,7 @@ export default function Home() {
 function Feature({ title, body }: { title: string; body: string }) {
   return (
     <div className="rounded-[26px] border border-line bg-card p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)]">
-      <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
+      <h2 className="font-sans text-[15px] font-semibold tracking-tight">{title}</h2>
       <p className="mt-1.5 text-[14px] leading-relaxed text-muted">{body}</p>
     </div>
   )

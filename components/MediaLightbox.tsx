@@ -1,5 +1,7 @@
 'use client'
 
+import { X } from '@phosphor-icons/react'
+
 import { useEffect, useId, useRef } from 'react'
 import type { EmbedType, Option } from '@/lib/types'
 import { EMBED_TYPE_LABEL } from '@/lib/embed'
@@ -106,9 +108,7 @@ export default function MediaLightbox({ media, onClose }: { media: LightboxMedia
           aria-label="Close"
           className="u-circle grid h-9 w-9 flex-none place-items-center rounded-full text-white/70 transition hover:bg-white/10 hover:text-white"
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
+          <X size={18} aria-hidden="true" />
         </button>
       </div>
 

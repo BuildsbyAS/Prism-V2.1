@@ -52,6 +52,37 @@ export function personName(email: string): string {
   return words.join(' ') || 'Someone'
 }
 
+/**
+ * Avatar fills, saturated enough to carry white initials.
+ *
+ * Solid rather than tinted: the card's stack sits half over the form's own
+ * thumbnail, and a pale chip vanishes against a bright one.
+ */
+const AVATAR_COLORS = [
+  '#4F46E5', // indigo
+  '#E11D48', // rose
+  '#0891B2', // cyan
+  '#B45309', // amber
+  '#7C3AED', // violet
+  '#059669', // emerald
+  '#DB2777', // pink
+  '#0D9488', // teal
+]
+
+/**
+ * A person's avatar colour, derived from their address.
+ *
+ * Hashed rather than actually random: the point of colouring these is that you
+ * come to recognise a teammate by their circle, which only works if the colour
+ * is the same on every card and every render. `Math.random()` would also
+ * reshuffle on each paint and break hydration.
+ */
+export function personColor(email: string): string {
+  let h = 0
+  for (let i = 0; i < email.length; i++) h = (h * 31 + email.charCodeAt(i)) >>> 0
+  return AVATAR_COLORS[h % AVATAR_COLORS.length]
+}
+
 /** Up to two letters for a creator's avatar circle. */
 export function personInitials(email: string): string {
   const words = personName(email).split(' ')
