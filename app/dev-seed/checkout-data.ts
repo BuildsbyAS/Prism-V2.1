@@ -255,6 +255,7 @@ const page = (id: string, type: PageType, order: number, title: string, body = '
   order_index: order,
   title,
   body,
+  show_neutral_option: true,
 })
 
 const option = (

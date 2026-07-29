@@ -1,11 +1,9 @@
 'use client'
 
-import { useState } from 'react'
 import { CaretUp, Check } from '@phosphor-icons/react'
 
 import type { FormResults, Option, Page, Widget } from '@/lib/types'
-import { WIDGET_META } from '@/lib/builder'
-import { EMBED_TYPE_LABEL } from '@/lib/embed'
+import { WIDGET_META, neutralChoiceKey, neutralChoiceLabel } from '@/lib/builder'
 import {
   ChartCard,
   DistributionColumns,
@@ -32,7 +30,6 @@ export function EndScreen({
   results,
   pages,
   options,
-  choices,
   onUpvote,
   sample = false,
   children,
@@ -43,8 +40,6 @@ export function EndScreen({
   results: FormResults | null
   pages: Page[]
   options: Option[]
-  /** This voter's picks, page id → option id (or 'tie'). Drives "Your choice". */
-  choices?: Record<string, string>
   onUpvote?: (id: string) => void
   /** Results are illustrative — label them as such and don't invite clicks. */
   sample?: boolean
@@ -52,17 +47,6 @@ export function EndScreen({
   children?: React.ReactNode
 }) {
   const feedbackPages = pages.filter((p) => p.type === 'feedback')
-  const mine = choices ?? {}
-  const hasMine = feedbackPages.some((p) => mine[p.id])
-  /**
-   * Two readings of the same vote, and people want them in this order: what did
-   * *I* say, then what did everyone say. Yours leads because it's the one thing
-   * on this screen you already know the answer to — seeing it confirmed is what
-   * makes the tally beside it mean something.
-   */
-  const [tab, setTab] = useState<'mine' | 'all'>('mine')
-  const showTabs = Boolean(results) && hasMine
-  const view = showTabs ? tab : 'all'
 
   return (
     <div className="mx-auto w-full max-w-[640px]">
@@ -84,25 +68,7 @@ export function EndScreen({
       {results && (
         <div className="mt-10 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            {showTabs ? (
-              <div className="inline-flex items-center gap-1 rounded-[14px] border border-line bg-black/[0.03] p-1">
-                {(['mine', 'all'] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setTab(t)}
-                    aria-pressed={tab === t}
-                    className={`flex h-7 items-center rounded-[10px] px-3.5 text-[13px] font-medium transition ${
-                      tab === t ? 'bg-card text-ink shadow-[0_1px_2px_rgba(0,0,0,0.08)]' : 'text-muted hover:text-ink'
-                    }`}
-                  >
-                    {t === 'mine' ? 'Your choice' : 'Everybody'}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">Results so far</p>
-            )}
+            <p className="text-[13px] font-semibold uppercase tracking-wide text-muted">Results so far</p>
             {sample ? (
               <span className="rounded-full bg-black/[0.06] px-2.5 py-1 text-[12px] font-medium text-muted">Sample data</span>
             ) : (
@@ -113,168 +79,70 @@ export function EndScreen({
             )}
           </div>
 
-          {view === 'mine' ? (
-            <YourChoice pages={feedbackPages} options={options} choices={mine} results={results} />
-          ) : (
-            <>
-              {feedbackPages.map((page) => (
-                <PageShare
-                  key={page.id}
-                  page={page}
-                  options={options.filter((o) => o.page_id === page.id)}
-                  results={results}
-                  mineId={mine[page.id]}
-                />
-              ))}
+          {feedbackPages.map((page) => (
+            <PageShare
+              key={page.id}
+              page={page}
+              options={options.filter((o) => o.page_id === page.id)}
+              results={results}
+            />
+          ))}
 
-              {results.widgets.map((b) => (
-                <ChartCard
-                  key={b.widget.id}
-                  title={widgetTitle(b.widget)}
-                  meta={b.average !== null ? `Average ${b.average}` : undefined}
-                >
-                  {b.widget.type === 'voice' || b.widget.type === 'text' ? (
-                    <ul className="space-y-2">
-                      {b.textAnswers.length === 0 && <li className="text-[14px] text-muted">No responses yet.</li>}
-                      {b.textAnswers.map((t) => (
-                        <li
-                          key={t.id}
-                          className={`flex gap-3 rounded-xl border border-line px-3.5 py-2.5 ${
-                            b.widget.type === 'voice' ? 'items-center' : 'items-start text-sm leading-relaxed'
-                          }`}
+          {results.widgets.map((b) => (
+            <ChartCard
+              key={b.widget.id}
+              title={widgetTitle(b.widget)}
+              meta={b.average !== null ? `Average ${b.average}` : undefined}
+            >
+              {b.widget.type === 'voice' || b.widget.type === 'text' ? (
+                <ul className="space-y-2">
+                  {b.textAnswers.length === 0 && <li className="text-[14px] text-muted">No responses yet.</li>}
+                  {b.textAnswers.map((t) => (
+                    <li
+                      key={t.id}
+                      className={`flex gap-3 rounded-xl border border-line px-3.5 py-2.5 ${
+                        b.widget.type === 'voice' ? 'items-center' : 'items-start text-sm leading-relaxed'
+                      }`}
+                    >
+                      {b.widget.type === 'voice' ? (
+                        <audio src={t.value} controls className="h-9 w-full min-w-0 max-w-[280px]" />
+                      ) : (
+                        <span className="min-w-0 flex-1">{t.value}</span>
+                      )}
+                      {/* A sample answer isn't upvotable — there's nothing behind it. */}
+                      {sample || !onUpvote ? (
+                        <span className="inline-flex flex-none items-center gap-1 rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">
+                          <CaretUp size={11} weight="bold" aria-hidden="true" />
+                          {t.upvotes}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onUpvote(t.id)}
+                          className="inline-flex flex-none items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[13px] font-medium text-muted transition hover:text-ink"
                         >
-                          {b.widget.type === 'voice' ? (
-                            <audio src={t.value} controls className="h-9 w-full min-w-0 max-w-[280px]" />
-                          ) : (
-                            <span className="min-w-0 flex-1">{t.value}</span>
-                          )}
-                          {/* A sample answer isn't upvotable — there's nothing behind it. */}
-                          {sample || !onUpvote ? (
-                            <span className="inline-flex flex-none items-center gap-1 rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">
-                              <CaretUp size={11} weight="bold" aria-hidden="true" />
-                              {t.upvotes}
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onUpvote(t.id)}
-                              className="inline-flex flex-none items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[13px] font-medium text-muted transition hover:text-ink"
-                            >
-                              <CaretUp size={11} weight="bold" aria-hidden="true" />
-                              {t.upvotes}
-                            </button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : b.widget.type === 'rating' ? (
-                    <DistributionColumns buckets={ratingBuckets(b.distribution)} unit="rating" />
-                  ) : b.widget.type === 'slider' ? (
-                    <DistributionColumns
-                      buckets={sliderBuckets(b.distribution, b.widget.config.min ?? 0, b.widget.config.max ?? 100)}
-                      unit="answer"
-                    />
-                  ) : (
-                    <NominalBars buckets={toBuckets(b.distribution)} total={b.count} />
-                  )}
-                </ChartCard>
-              ))}
-            </>
-          )}
+                          <CaretUp size={11} weight="bold" aria-hidden="true" />
+                          {t.upvotes}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : b.widget.type === 'rating' ? (
+                <DistributionColumns buckets={ratingBuckets(b.distribution)} unit="rating" />
+              ) : b.widget.type === 'slider' ? (
+                <DistributionColumns
+                  buckets={sliderBuckets(b.distribution, b.widget.config.min ?? 0, b.widget.config.max ?? 100)}
+                  unit="answer"
+                />
+              ) : (
+                <NominalBars buckets={toBuckets(b.distribution)} total={b.count} />
+              )}
+            </ChartCard>
+          ))}
         </div>
       )}
     </div>
-  )
-}
-
-/**
- * What this voter picked, comparison by comparison — with the thing they picked
- * shown, not just named. On a form that compared four screenshots, "Option B"
- * means nothing an hour later; the image does.
- */
-function YourChoice({
-  pages,
-  options,
-  choices,
-  results,
-}: {
-  pages: Page[]
-  options: Option[]
-  choices: Record<string, string>
-  results: FormResults
-}) {
-  return (
-    <div className="space-y-4">
-      {pages.map((page) => {
-        const opts = options.filter((o) => o.page_id === page.id)
-        const pickedId = choices[page.id]
-        const picked = opts.find((o) => o.id === pickedId)
-        const index = picked ? opts.indexOf(picked) : -1
-        // Counted against the people who answered *this* comparison, not everyone
-        // who opened the form — otherwise the same votes read as two different
-        // percentages across the two tabs.
-        const counts = opts.map((o) => results.optionCounts[o.id] ?? 0)
-        const voted = counts.reduce((sum, n) => sum + n, 0)
-        const n = index >= 0 ? counts[index] : 0
-        const pct = voted ? Math.round((n / voted) * 100) : 0
-        const leading = n > 0 && n === Math.max(...counts)
-        return (
-          <ChartCard key={page.id} title={page.title || 'Your pick'}>
-            {picked ? (
-              <div className="flex items-center gap-3.5">
-                <Thumb option={picked} color={optionColor(index)} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="min-w-0 truncate text-[15px] font-semibold tracking-tight">{picked.name}</p>
-                    {/* The verdict on their pick, said out loud — it's the thing
-                        they'd otherwise work out by comparing the other tab. */}
-                    {leading && (
-                      <span className="flex-none rounded-full bg-ink px-2 py-0.5 text-[12px] font-medium text-white">
-                        Most picked
-                      </span>
-                    )}
-                  </div>
-                  {picked.description && <p className="mt-0.5 truncate text-[13px] text-muted">{picked.description}</p>}
-                  {/* Where their pick landed with everyone else — the one number
-                      that makes a personal choice interesting. */}
-                  <p className="mt-1.5 text-[13px] text-muted">
-                    <span className="font-medium text-ink">{pct}%</span> of {voted}{' '}
-                    {voted === 1 ? 'person' : 'people'} chose this
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-[14px] text-muted">
-                {pickedId === 'tie' ? 'You said they all felt equal.' : 'You skipped this one.'}
-              </p>
-            )}
-          </ChartCard>
-        )
-      })}
-    </div>
-  )
-}
-
-/** The option's media at postage-stamp size — enough to recognise it by. */
-function Thumb({ option, color }: { option: Option; color: string }) {
-  if (option.embed_type === 'image' && option.embed_url) {
-    return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={option.embed_url}
-        alt=""
-        className="h-14 w-14 flex-none rounded-xl border border-line object-cover"
-        style={{ outline: `2px solid ${color}`, outlineOffset: 1 }}
-      />
-    )
-  }
-  return (
-    <span
-      className="grid h-14 w-14 flex-none place-items-center rounded-xl border border-line bg-black/[0.03] px-1 text-center text-[11px] font-medium leading-tight text-muted"
-      style={{ outline: `2px solid ${color}`, outlineOffset: 1 }}
-    >
-      {option.embed_url ? EMBED_TYPE_LABEL[option.embed_type] : 'No media'}
-    </span>
   )
 }
 
@@ -283,12 +151,10 @@ function PageShare({
   page,
   options,
   results,
-  mineId,
 }: {
   page: Page
   options: Option[]
   results: FormResults
-  mineId?: string
 }) {
   if (options.length === 0) return null
   const slices: Slice[] = options.map((o, i) => ({
@@ -297,6 +163,15 @@ function PageShare({
     value: results.optionCounts[o.id] ?? 0,
     color: optionColor(i),
   }))
+  const neutralCount = results.optionCounts[neutralChoiceKey(page.id)] ?? 0
+  if (page.show_neutral_option !== false || neutralCount > 0) {
+    slices.push({
+      id: neutralChoiceKey(page.id),
+      label: neutralChoiceLabel(options.length),
+      value: neutralCount,
+      color: optionColor(options.length),
+    })
+  }
   const voted = slices.reduce((sum, s) => sum + s.value, 0)
   const lead = slices.reduce((best, s) => (s.value > best.value ? s : best), slices[0])
   return (
@@ -306,7 +181,7 @@ function PageShare({
     >
       <div className="space-y-3.5">
         <ShareBar slices={slices} total={voted} />
-        <ShareLegend slices={slices} total={voted} leadId={lead.value > 0 ? lead.id : null} mineId={mineId} />
+        <ShareLegend slices={slices} total={voted} leadId={lead.value > 0 ? lead.id : null} />
       </div>
     </ChartCard>
   )
@@ -405,17 +280,4 @@ export function sampleResults(pages: Page[], options: Option[], widgets: Widget[
       }
     }),
   }
-}
-
-/**
- * The picks the builder's preview shows under "Your choice" — the first option
- * of each comparison, which is also the sample tally's winner.
- */
-export function sampleChoices(pages: Page[], options: Option[]): Record<string, string> {
-  const picks: Record<string, string> = {}
-  for (const page of pages) {
-    const first = options.find((o) => o.page_id === page.id)
-    if (first) picks[page.id] = first.id
-  }
-  return picks
 }

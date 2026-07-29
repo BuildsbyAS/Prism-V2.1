@@ -16,13 +16,13 @@ import {
 } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
 import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
-import { ArrowClockwise, ArrowDown, Check } from '@phosphor-icons/react'
+import { ArrowClockwise, ArrowDown, ArrowLeft, Check } from '@phosphor-icons/react'
 import Link from 'next/link'
 import ZoomableMedia from '@/components/ZoomableMedia'
 import MediaLightbox, { optionMedia, type LightboxMedia } from '@/components/MediaLightbox'
 import WidgetInput from '@/components/WidgetInput'
 import { EndScreen } from '@/components/EndScreen'
-import { formName } from '@/lib/builder'
+import { formName, neutralChoiceLabel } from '@/lib/builder'
 import HeroPanel from '@/components/HeroPanel'
 
 type Phase = 'welcome' | 'vote' | 'submitting' | 'done'
@@ -74,6 +74,7 @@ export default function VoterPage() {
   // right and dims the rest.
   const [hovered, setHovered] = useState<string | null>(null)
   const [answers, setAnswers] = useState<Record<string, AnswerValue>>({})
+  const [answerSaving, setAnswerSaving] = useState<Record<string, boolean>>({})
   const [results, setResults] = useState<FormResults | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [hasVoted, setHasVoted] = useState(false)
@@ -153,6 +154,9 @@ export default function VoterPage() {
     if (!full) return null
     const page = full.pages[pageIndex]
     if (!page || page.type !== 'feedback') return null
+    if (full.widgets.some((w) => w.page_id === page.id && answerSaving[w.id])) {
+      return 'Wait for your recording to finish saving.'
+    }
     if ((voteOptions[page.id]?.length ?? 0) > 0 && !choices[page.id]) {
       return 'Choose an option to continue.'
     }
@@ -177,6 +181,10 @@ export default function VoterPage() {
 
   async function submit() {
     if (!full || submittingRef.current || hasVoted) return
+    if (Object.values(answerSaving).some(Boolean)) {
+      setError('Wait for your recording to finish saving.')
+      return
+    }
     // The step in front of the voter answers for itself first: every earlier one
     // was cleared on the way through, so naming "each comparison" here would
     // point at pages they can no longer see.
@@ -258,6 +266,7 @@ export default function VoterPage() {
   function restart() {
     setChoices({})
     setAnswers({})
+    setAnswerSaving({})
     setResults(null)
     setHasVoted(false)
     setError(null)
@@ -371,7 +380,8 @@ export default function VoterPage() {
       .sort((a, b) => a.order_index - b.order_index)
     const isLast = step === full.pages.length - 1
     const picked = choices[page.id]
-    const busy = phase === 'submitting'
+    const answerBusy = wids.some((w) => answerSaving[w.id])
+    const busy = phase === 'submitting' || answerBusy
     // Dimming is a hover behaviour, not a record of the answer: a chosen option
     // marks itself (border, badge, button) without greying out the others, so
     // the voter can still compare — and change their mind — afterwards.
@@ -407,6 +417,9 @@ export default function VoterPage() {
                       widget={w}
                       value={answers[w.id]}
                       onChange={(v) => setAnswers((a) => ({ ...a, [w.id]: v }))}
+                      onBusyChange={(saving) =>
+                        setAnswerSaving((current) => ({ ...current, [w.id]: saving }))
+                      }
                       hideLabel={w.config.showTitle === false}
                     />
                   </div>
@@ -436,7 +449,7 @@ export default function VoterPage() {
                   <button
                     type="button"
                     onClick={nextStep}
-                    disabled={needsPick}
+                    disabled={needsPick || busy}
                     className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Next
@@ -476,12 +489,12 @@ export default function VoterPage() {
                   />
                 ))}
               </div>
-              {/* "They all feel equal" is an answer like any other, so it lives
-                  with them — it just has no media of its own to sit on. */}
-              {selectable && opts.length >= 2 && (
+              {/* The creator controls whether this generated neutral answer is
+                  offered. It lives with the options but has no media of its own. */}
+              {selectable && opts.length >= 2 && page.show_neutral_option !== false && (
                 <div className="mt-4">
                   <ChoiceRow
-                    label={opts.length === 2 ? 'Both feel equal' : 'They all feel equal'}
+                    label={neutralChoiceLabel(opts.length)}
                     selected={picked === 'tie'}
                     disabled={hasVoted || busy}
                     onSelect={() => setChoices((c) => ({ ...c, [page.id]: 'tie' }))}
@@ -530,7 +543,6 @@ export default function VoterPage() {
         <ThankYou
           form={full}
           results={form.show_results_to_voters ? results : null}
-          choices={choices}
           preview={preview}
           returning={alreadyVoted}
           onRestart={restart}
@@ -549,7 +561,6 @@ export default function VoterPage() {
 function ThankYou({
   form,
   results,
-  choices,
   preview,
   returning,
   onRestart,
@@ -557,8 +568,6 @@ function ThankYou({
 }: {
   form: FullForm
   results: FormResults | null
-  /** This voter's picks, page id → option id (or 'tie') — the "Your choice" tab. */
-  choices: Record<string, string>
   preview: boolean
   /** Arrived already having responded, rather than having just submitted. */
   returning: boolean
@@ -593,10 +602,9 @@ function ThankYou({
       results={results}
       pages={form.pages}
       options={form.options}
-      choices={choices}
       onUpvote={onUpvote}
     >
-      {preview && (
+      {preview ? (
         <button
           type="button"
           onClick={onRestart}
@@ -604,6 +612,13 @@ function ThankYou({
         >
           <ArrowClockwise size={15} aria-hidden="true" /> Start over
         </button>
+      ) : (
+        <Link
+          href="/creator"
+          className="mt-6 inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
+        >
+          <ArrowLeft size={15} aria-hidden="true" /> Back to My forms
+        </Link>
       )}
     </EndScreen>
   )

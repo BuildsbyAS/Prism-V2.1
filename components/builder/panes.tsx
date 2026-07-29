@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
-import { MAX_WIDGETS } from '@/lib/builder'
+import { MAX_WIDGETS, neutralChoiceLabel } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
 import { brightnessStyle } from '@/lib/image'
 import { Plus, Trash, X } from '@phosphor-icons/react'
@@ -161,6 +161,29 @@ export function PageCenter({
             </button>
           )}
         </div>
+        {feedback && options.length >= 2 && (
+          <label
+            className={`mt-4 flex items-center gap-3 rounded-2xl border px-4 py-3.5 transition ${
+              page.show_neutral_option !== false
+                ? 'border-line bg-card text-ink'
+                : 'border-dashed border-line-strong bg-black/[0.015] text-muted'
+            } ${readOnly ? 'cursor-default' : 'cursor-pointer hover:border-ink/40'}`}
+          >
+            <input
+              type="checkbox"
+              checked={page.show_neutral_option !== false}
+              disabled={readOnly}
+              onChange={(event) => onPageChange({ show_neutral_option: event.target.checked })}
+              className="h-4 w-4 flex-none accent-[#18191d]"
+            />
+            <span className="min-w-0 flex-1 text-[14px] font-medium">
+              {neutralChoiceLabel(options.length)}
+            </span>
+            <span className="flex-none text-[12px] text-muted">
+              {page.show_neutral_option !== false ? 'Visible to voters' : 'Hidden from voters'}
+            </span>
+          </label>
+        )}
       </section>
 
       {/* Feedback inputs — feedback pages only */}

@@ -23,6 +23,12 @@ export interface Page {
   order_index: number
   title: string
   body: string
+  /**
+   * Whether voters may choose the generated neutral answer beneath the real
+   * options. Existing/demo rows can omit it; undefined retains the historical
+   * default of showing the answer.
+   */
+  show_neutral_option?: boolean
 }
 
 export interface Form {
@@ -168,7 +174,7 @@ export interface FormResults {
   total: number
   firstAt: string | null
   lastAt: string | null
-  optionCounts: Record<string, number> // option_id -> vote count
+  optionCounts: Record<string, number> // option_id or `tie:${page_id}` -> vote count
   widgets: WidgetBreakdown[]
 }
 

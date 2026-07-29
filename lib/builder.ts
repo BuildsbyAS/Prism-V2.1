@@ -85,7 +85,25 @@ export function formName(form: Pick<Form, 'name' | 'title'>): string {
 }
 
 export function newPage(formId: string, type: PageType, order: number): Page {
-  return { id: uid(), form_id: formId, type, order_index: order, title: '', body: '' }
+  return {
+    id: uid(),
+    form_id: formId,
+    type,
+    order_index: order,
+    title: '',
+    body: '',
+    show_neutral_option: true,
+  }
+}
+
+/** Generated neutral choice shown below a comparison's authored options. */
+export function neutralChoiceLabel(optionCount: number): string {
+  return optionCount > 2 ? "I don't like anything" : 'Both feel equal'
+}
+
+/** Result-bucket key for a page's generated neutral choice. */
+export function neutralChoiceKey(pageId: string): string {
+  return `tie:${pageId}`
 }
 
 export function newOption(formId: string, pageId: string, order: number, letterIndex: number): Option {

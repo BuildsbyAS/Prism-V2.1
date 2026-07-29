@@ -96,7 +96,7 @@ function form(over: Partial<Form> & Pick<Form, 'id' | 'slug' | 'created_at'>): F
 }
 
 function page(id: string, formId: string, type: PageType, order: number, title: string, body = ''): Page {
-  return { id, form_id: formId, type, order_index: order, title, body }
+  return { id, form_id: formId, type, order_index: order, title, body, show_neutral_option: true }
 }
 
 function option(
