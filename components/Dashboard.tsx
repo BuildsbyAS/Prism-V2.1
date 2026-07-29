@@ -181,6 +181,8 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
   const { user, loading: authLoading } = useCurrentUser()
   const [forms, setForms] = useState<DashboardForm[] | null>(listCache.mine)
   const [team, setTeam] = useState<TeamForm[] | null>(listCache.team)
+  const [teamError, setTeamError] = useState<string | null>(null)
+  const [teamReloadKey, setTeamReloadKey] = useState(0)
   const [creating, setCreating] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   // Team only. '' is the "No pod" bucket — forms published before pods existed,
@@ -211,11 +213,19 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
   // feed from /creator, and it's the more expensive of the two queries.
   useEffect(() => {
     if (tab !== 'team' || !user) return
-    getTeamForms(user.id).then((c) => {
-      listCache.team = c
-      setTeam(c)
-    })
-  }, [tab, user])
+    getTeamForms(user.id)
+      .then((c) => {
+        listCache.team = c
+        setTeam(c)
+        setTeamError(null)
+      })
+      .catch((error: unknown) => {
+        console.error('Could not load the Team workspace', error)
+        listCache.team = null
+        setTeam(null)
+        setTeamError('The shared workspace could not be loaded.')
+      })
+  }, [tab, user, teamReloadKey])
 
   async function handleRename(id: string, name: string) {
     await renameForm(id, name)
@@ -278,7 +288,16 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
           )}
         </div>
 
-        {items === null ? (
+        {tab === 'team' && teamError ? (
+          <TeamErrorState
+            message={teamError}
+            onRetry={() => {
+              setTeam(null)
+              setTeamError(null)
+              setTeamReloadKey((key) => key + 1)
+            }}
+          />
+        ) : items === null ? (
           <GridSkeleton />
         ) : items.length === 0 ? (
           tab === 'mine' ? (
@@ -1266,6 +1285,27 @@ function TeamEmptyState() {
         Every form the team publishes lands here — active ones to vote on, closed ones to look back
         at. Publish yours and it becomes the first.
       </p>
+    </div>
+  )
+}
+
+function TeamErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="mt-10 flex flex-col items-center rounded-[26px] border border-dashed border-line-strong bg-black/[0.015] px-6 py-16 text-center">
+      <div className="grid h-12 w-12 place-items-center rounded-2xl bg-black/[0.06]">
+        <UsersThree size={22} aria-hidden="true" />
+      </div>
+      <h2 className="mt-4 font-sans text-[17px] font-semibold tracking-tight">
+        Team workspace unavailable
+      </h2>
+      <p className="mt-1.5 max-w-sm text-[15px] leading-relaxed text-muted">{message}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-5 rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
+      >
+        Try again
+      </button>
     </div>
   )
 }

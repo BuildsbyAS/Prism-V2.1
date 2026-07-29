@@ -414,3 +414,68 @@ $$;
 
 revoke all on function public.form_voters(uuid) from public;
 grant execute on function public.form_voters(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Team feed
+-- ---------------------------------------------------------------------------
+-- Every published form in the workspace — open and closed, by any creator —
+-- with the dashboard metadata, response tally, and author needed by Team.
+--
+-- RLS deliberately hides closed forms, other creators' response rows, and
+-- auth.users. This narrowly scoped security-definer function returns one
+-- aggregate row per form without granting access to any of those source rows.
+-- The caller must be an authenticated workspace user; anonymous clients cannot
+-- execute it.
+drop function if exists public.team_forms();
+create or replace function public.team_forms()
+returns table (
+  id                uuid,
+  slug              text,
+  name              text,
+  title             text,
+  testing_question  text,
+  status            text,
+  creator_id        uuid,
+  creator_email     text,
+  expires_at        timestamptz,
+  pod               text,
+  collaborators     text[],
+  hero_image_url    text,
+  hero_bg           text,
+  hero_dither       boolean,
+  response_count    bigint,
+  last_response_at  timestamptz
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select f.id,
+         f.slug,
+         f.name,
+         f.title,
+         f.testing_question,
+         f.status,
+         f.creator_id,
+         u.email::text,
+         f.expires_at,
+         f.pod,
+         f.collaborators,
+         f.hero_image_url,
+         f.hero_bg,
+         f.hero_dither,
+         count(r.id),
+         max(r.submitted_at)
+    from public.forms f
+    join auth.users u on u.id = f.creator_id
+    left join public.responses r on r.form_id = f.id
+   where f.status in ('open', 'closed')
+     and auth.uid() is not null
+     and public.is_noon_user()
+   group by f.id, u.email
+   order by coalesce(f.published_at, f.created_at) desc;
+$$;
+
+revoke all on function public.team_forms() from public;
+grant execute on function public.team_forms() to authenticated;
