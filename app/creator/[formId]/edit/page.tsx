@@ -428,7 +428,7 @@ export default function BuilderPage() {
   function publish() {
     if (locked) return
     if (!form) return
-    // Belt and braces with the dialog's disabled button. A live form has to be
+    // Belt and braces with the dialog's validation. A live form has to be
     // attributable (name, pod) and time-boxed (expiry) as much as it has to have
     // content, and this is the one function that flips the status.
     if (!ready.publishable || publishDetailsMissing(form).length > 0) return
@@ -534,15 +534,15 @@ export default function BuilderPage() {
   const publishLabel = !published ? 'Publish form' : dirty ? 'Publish changes' : 'Published'
 
   const blocker = publishBlocker(ready, pages)
-  // Always opens. It used to swallow the click while the form was incomplete,
-  // which left the one place that can say *what* is missing — the dialog, which
-  // marks each empty required field — unreachable from the only button that
-  // leads there. The dialog does the gating now; this just gets you to it.
+  // Content is completed in the builder, so gate it here. Release details live
+  // in the dialog instead; its action stays clickable when those fields are
+  // blank so pressing it can mark each missing value with an inline error.
   const publishButton = (
     <button
       type="button"
       onClick={() => setShareOpen(true)}
-      className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90"
+      disabled={!ready.publishable}
+      className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {publishLabel}
     </button>
@@ -552,12 +552,12 @@ export default function BuilderPage() {
    * "Your introduction is done — now set up what people vote on."
    *
    * Shown on the introduction screen once its title and subtitle are in, and
-   * only while there is still no finished Get Vote page. That second condition
-   * is what keeps this from nagging: it stops appearing for good the moment the
-   * form can actually collect a response, so it needs no dismissal to remember
-   * and no "seen it" flag in storage. The × is only for the current sitting.
+   * only while a Get Vote page is still unfinished. That second condition is
+   * what keeps this from nagging: it stops appearing for good the moment every
+   * voter-facing question is ready, so it needs no "seen it" flag in storage.
+   * The × is only for the current sitting.
    */
-  const firstVotePage = pages.find((p) => p.type === 'feedback')
+  const nextVotePage = pages.find((p) => p.type === 'feedback' && !pageReady(p, options, widgets))
   const showIntroNudge = !locked && screen.id === 'welcome' && ready.welcome && !ready.middle && !nudgeDismissed
 
   // The last page can only be emptied, so the rail and the properties panel both
@@ -642,9 +642,17 @@ export default function BuilderPage() {
         <div className="hidden md:block">
           <DeviceSwitch value={device} onChange={setDevice} />
         </div>
-        {/* The tooltip still previews the blocker on hover; the click goes
-            through either way, and the dialog repeats it beside its button. */}
-        {locked ? null : blocker && !published ? <Tooltip label={blocker}>{publishButton}</Tooltip> : publishButton}
+        {/* A disabled control cannot explain itself, so a focusable wrapper
+            keeps the readiness blocker available to pointer and keyboard users. */}
+        {locked ? null : blocker ? (
+          <Tooltip label={blocker}>
+            <span tabIndex={0} aria-label={blocker} className="inline-flex rounded-[16px] outline-none focus-visible:ring-2 focus-visible:ring-ink/25">
+              {publishButton}
+            </span>
+          </Tooltip>
+        ) : (
+          publishButton
+        )}
       </FormHeader>
 
       {/* --rail and --panel are the two draggable columns (see PanelResizer).
@@ -781,12 +789,12 @@ export default function BuilderPage() {
               <CanvasNudge
                 title="Introduction page is ready"
                 body={
-                  firstVotePage
-                    ? 'Next, set up what people will be voting on.'
+                  nextVotePage
+                    ? 'Next, finish what people will be voting on.'
                     : 'Next, add the page people will vote on.'
                 }
-                cta={firstVotePage ? 'Go to Get Vote' : 'Add Get Vote'}
-                onAct={() => (firstVotePage ? goToScreen(firstVotePage.id) : addPage('feedback'))}
+                cta={nextVotePage ? 'Go to Get Vote' : 'Add Get Vote'}
+                onAct={() => (nextVotePage ? goToScreen(nextVotePage.id) : addPage('feedback'))}
                 onDismiss={() => setNudgeDismissed(true)}
               />
             )}

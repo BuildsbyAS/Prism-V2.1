@@ -61,7 +61,7 @@ function LoginForm() {
     setBusy(true)
     try {
       if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -69,12 +69,20 @@ function LoginForm() {
           },
         })
         if (error) return setError(error.message)
+        // Auto-confirmed signups return a session immediately, so enter the
+        // product instead of asking the user to wait for an email.
+        if (data.session) {
+          window.location.assign(next)
+          return
+        }
         setError('Check your inbox to confirm your email, then sign in.')
         setMode('signin')
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) return setError(error.message)
-        router.push(next)
+        // Crossing the auth boundary with a full navigation ensures the
+        // server-side route guard sees the freshly written session cookie.
+        window.location.assign(next)
       }
     } finally {
       setBusy(false)
