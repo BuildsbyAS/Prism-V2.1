@@ -8,7 +8,7 @@ import {
   submitResponse,
   getResults,
   upvoteAnswer,
-  hasResponded,
+  getSubmittedResponse,
   isAlreadyResponded,
   isLoginRequired,
   isFormNotAccepting,
@@ -133,11 +133,19 @@ export default function VoterPage() {
       // nobody responded?", get false, and quietly hand a second vote to someone
       // who already has one.
       if (authLoading) return
-      hasResponded(f.form.id, { userId: user?.id ?? null, sessionId: sessionId(slug) }).then((already) => {
-        if (!already) return
+      getSubmittedResponse(f.form.id, {
+        userId: user?.id ?? null,
+        sessionId: sessionId(slug),
+      }).then((submitted) => {
+        if (!submitted) return
+        setChoices(submitted.choices)
+        setAnswers(submitted.answers)
         setHasVoted(true)
         setAlreadyVoted(true)
-        setPhase('done')
+        // A returning voter starts at the introduction like anyone following
+        // the shared link. Their submitted controls are restored and locked,
+        // while media and prototypes remain available to inspect.
+        setPhase('welcome')
         if (f.form.show_results_to_voters) getResults(f.form.id).then(setResults)
       })
     })
@@ -174,8 +182,10 @@ export default function VoterPage() {
   }
 
   function nextStep() {
-    const blocker = stepBlocker(step)
-    if (blocker) return setError(blocker)
+    if (!alreadyVoted) {
+      const blocker = stepBlocker(step)
+      if (blocker) return setError(blocker)
+    }
     goToStep(step + 1)
   }
 
@@ -340,9 +350,20 @@ export default function VoterPage() {
           <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[32px]">{form.title || 'Share your feedback'}</h1>
           {form.body_copy && <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted">{form.body_copy}</p>}
           <div className="mt-8">
-            <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
-              Get started
-            </button>
+            {alreadyVoted ? (
+              <ReturningVoterActions
+                canShowResults={form.show_results_to_voters}
+                onReview={() => {
+                  setStep(0)
+                  setPhase('vote')
+                }}
+                onShowResults={() => setPhase('done')}
+              />
+            ) : (
+              <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
+                Get started
+              </button>
+            )}
             {form.show_time_estimate && (
               <p className="mt-2.5 text-[13px] text-muted">
                 Takes about {form.estimated_minutes} minute{form.estimated_minutes === 1 ? '' : 's'}
@@ -438,6 +459,7 @@ export default function VoterPage() {
                         setAnswerSaving((current) => ({ ...current, [w.id]: saving }))
                       }
                       hideLabel={w.config.showTitle === false}
+                      disabled={hasVoted || busy}
                     />
                   </div>
                 ))}
@@ -453,7 +475,21 @@ export default function VoterPage() {
                 >
                   Back
                 </button>
-                {isLast ? (
+                {isLast && alreadyVoted ? (
+                  form.show_results_to_voters ? (
+                    <button
+                      type="button"
+                      onClick={() => setPhase('done')}
+                      className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
+                    >
+                      Show results
+                    </button>
+                  ) : (
+                    <span className="rounded-full bg-black/[0.06] px-3 py-2 text-[13px] font-medium text-muted">
+                      Your response is locked
+                    </span>
+                  )
+                ) : isLast ? (
                   <button
                     type="button"
                     onClick={submit}
@@ -466,7 +502,7 @@ export default function VoterPage() {
                   <button
                     type="button"
                     onClick={nextStep}
-                    disabled={needsPick || busy}
+                    disabled={(!alreadyVoted && needsPick) || busy}
                     className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Next
@@ -545,9 +581,20 @@ export default function VoterPage() {
           <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[28px]">{form.title || 'Share your feedback'}</h1>
           {form.body_copy && <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted">{form.body_copy}</p>}
           <div className="mt-8">
-            <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
-              Get started
-            </button>
+            {alreadyVoted ? (
+              <ReturningVoterActions
+                canShowResults={form.show_results_to_voters}
+                onReview={() => {
+                  setStep(0)
+                  setPhase('vote')
+                }}
+                onShowResults={() => setPhase('done')}
+              />
+            ) : (
+              <button type="button" onClick={() => setPhase('vote')} className="rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
+                Get started
+              </button>
+            )}
             {form.show_time_estimate && (
               <p className="mt-2.5 text-[13px] text-muted">
                 Takes about {form.estimated_minutes} minute{form.estimated_minutes === 1 ? '' : 's'}
@@ -574,6 +621,42 @@ export default function VoterPage() {
       </div>
     </div>
     </main>
+  )
+}
+
+function ReturningVoterActions({
+  canShowResults,
+  onReview,
+  onShowResults,
+}: {
+  canShowResults: boolean
+  onReview: () => void
+  onShowResults: () => void
+}) {
+  return (
+    <div className="max-w-xl rounded-2xl border border-line bg-black/[0.025] p-4">
+      <p role="status" className="text-[14px] leading-relaxed text-muted">
+        You’ve already voted. Your response is locked, but you can still review every page and interact with its media.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2.5">
+        <button
+          type="button"
+          onClick={onReview}
+          className="rounded-[16px] border border-line-strong bg-card px-4 py-2.5 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
+        >
+          Review form
+        </button>
+        {canShowResults && (
+          <button
+            type="button"
+            onClick={onShowResults}
+            className="rounded-[16px] bg-ink px-4 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
+          >
+            Show results
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
 

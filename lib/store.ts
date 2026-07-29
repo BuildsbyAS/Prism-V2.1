@@ -666,6 +666,62 @@ export async function hasResponded(formId: string, who: VoterIdentity): Promise<
   return readDemo().responses.some((r) => r.form_id === formId && r.voter_session_id === who.sessionId)
 }
 
+/**
+ * Load this voter's submitted choices and widget answers for read-only review.
+ *
+ * The response row is already own-read under RLS; response_answers has the same
+ * owner-only select policy. Nothing from another voter can be returned.
+ */
+export async function getSubmittedResponse(
+  formId: string,
+  who: VoterIdentity,
+): Promise<SubmittedResponse | null> {
+  if (isSupabaseConfigured && supabase) {
+    if (!who.userId) return null
+    const { data: response, error } = await supabase
+      .from('responses')
+      .select('id,choices')
+      .eq('form_id', formId)
+      .eq('voter_id', who.userId)
+      .maybeSingle()
+    if (error || !response) return null
+
+    const { data: answerRows, error: answerError } = await supabase
+      .from('response_answers')
+      .select('widget_id,value')
+      .eq('response_id', response.id)
+    // The response itself is the authoritative vote lock. If an older backend
+    // has not received the own-answer policy yet, keep the lock and choices
+    // working while the answer list temporarily falls back to empty.
+    if (answerError) {
+      return {
+        choices: (response.choices ?? {}) as SubmittedResponse['choices'],
+        answers: {},
+      }
+    }
+
+    return {
+      choices: (response.choices ?? {}) as SubmittedResponse['choices'],
+      answers: Object.fromEntries(
+        (answerRows ?? []).map((row) => [row.widget_id, row.value]),
+      ) as SubmittedResponse['answers'],
+    }
+  }
+
+  if (!who.sessionId) return null
+  const db = readDemo()
+  const response = db.responses.find(
+    (r) => r.form_id === formId && r.voter_session_id === who.sessionId,
+  )
+  if (!response) return null
+  const answers = Object.fromEntries(
+    db.answers
+      .filter((answer) => answer.response_id === response.id)
+      .map((answer) => [answer.widget_id, answer.value]),
+  )
+  return { choices: response.choices, answers }
+}
+
 export async function submitResponse(
   formId: string,
   who: VoterIdentity,

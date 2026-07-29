@@ -176,7 +176,7 @@ export default function FormPreviewPage() {
       <div className="flex h-[calc(100dvh-3.5rem)] flex-col overflow-hidden">
         <div
           role="note"
-          className="flex flex-none items-center justify-center gap-1.5 border-b border-line bg-card px-4 py-2 text-center text-[12px] text-muted"
+          className="flex flex-none items-center justify-center gap-1.5 border-b border-orange-200 bg-orange-50 px-4 py-2 text-center text-[14px] font-medium text-orange-700"
         >
           <Info size={14} className="flex-none" aria-hidden="true" />
           <span>

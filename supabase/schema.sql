@@ -388,6 +388,14 @@ create policy "signed-in insert own answers" on public.response_answers for inse
   with check (exists (select 1 from public.responses r
                       where r.id = response_id and r.voter_id = auth.uid()));
 
+-- Returning voters may review the answers they already submitted. The parent
+-- response owns the identity, so no answer belonging to another voter is read.
+drop policy if exists "voter reads own answers" on public.response_answers;
+create policy "voter reads own answers" on public.response_answers for select
+  to authenticated
+  using (exists (select 1 from public.responses r
+                  where r.id = response_id and r.voter_id = auth.uid()));
+
 -- ---------------------------------------------------------------------------
 -- Who responded (creator only)
 -- ---------------------------------------------------------------------------
