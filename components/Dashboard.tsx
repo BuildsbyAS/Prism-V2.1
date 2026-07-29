@@ -146,6 +146,8 @@ interface ListItem {
   form: ListedForm
   responseCount: number
   lastResponseAt: string | null
+  /** My Forms: collaborators are editors, but only the creator may delete. */
+  isOwner?: boolean
   creator?: { email: string; mine: boolean }
   /** Team only: whether this viewer has already submitted the form. */
   hasResponded?: boolean
@@ -211,7 +213,7 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
       router.replace('/login')
       return
     }
-    getDashboard(user.id).then((f) => {
+    getDashboard(user.id, user.email).then((f) => {
       listCache.mine = f
       setForms(f)
     })
@@ -242,7 +244,7 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
     listCache.team = null
     setTeam(null)
     if (!user) return
-    const next = await getDashboard(user.id)
+    const next = await getDashboard(user.id, user.email)
     listCache.mine = next
     setForms(next)
   }
@@ -255,7 +257,7 @@ export default function Dashboard({ tab }: { tab: DashboardTab }) {
     listCache.team = null
     setTeam(null)
     if (user) {
-      const next = await getDashboard(user.id)
+      const next = await getDashboard(user.id, user.email)
       listCache.mine = next
       setForms(next)
     }
@@ -505,7 +507,14 @@ function Workspace({
       ) : view === 'card' ? (
         <div className="u-stagger mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((item) => (
-            <FormCard key={item.form.id} item={item} tab={tab} viewerEmail={viewerEmail} onDelete={onDelete} onRename={onRename} />
+            <FormCard
+              key={item.form.id}
+              item={item}
+              tab={tab}
+              viewerEmail={viewerEmail}
+              onDelete={item.isOwner === false ? undefined : onDelete}
+              onRename={onRename}
+            />
           ))}
         </div>
       ) : (
@@ -513,7 +522,13 @@ function Workspace({
           <ListHeader tab={tab} showCreator={visible.some((i) => i.creator)} />
           <div className="u-stagger divide-y divide-line border-t border-line">
             {visible.map((item) => (
-              <FormRow key={item.form.id} item={item} tab={tab} onDelete={onDelete} onRename={onRename} />
+              <FormRow
+                key={item.form.id}
+                item={item}
+                tab={tab}
+                onDelete={item.isOwner === false ? undefined : onDelete}
+                onRename={onRename}
+              />
             ))}
           </div>
         </div>
@@ -655,7 +670,7 @@ function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListIt
     // thumbnail and would be clipped by it. The thumbnail clips itself instead.
     <div
       className={`group relative flex flex-col rounded-[20px] border bg-card transition hover:bg-black/[0.015] ${
-        menuOpen ? 'z-50 border-line-strong' : 'border-line hover:border-line-strong'
+        menuOpen ? 'z-[100] border-line-strong' : 'border-line hover:border-line-strong'
       }`}
     >
       {/* The form's own hero, at card size — see FormThumbnail. rounded-t-[19px]
@@ -675,7 +690,7 @@ function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListIt
         // Over the thumbnail rather than beside the status chip: the chip row is
         // gone, and a menu floating on the artwork is out of the way of every
         // other thing on the card.
-        <div className="absolute right-2 top-2 z-10">
+        <div className="absolute right-2 top-2 z-[150]">
           <RowMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}
@@ -841,7 +856,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
     // whole row while its menu is open so the popover clears the sibling rows.
     <div
       className={`group relative -mx-3 grid ${ROW_GRID[tab]} items-center gap-4 rounded-[16px] px-3 py-3.5 transition hover:bg-black/[0.025] ${
-        menuOpen ? 'z-50' : ''
+        menuOpen ? 'z-[100]' : ''
       }`}
     >
       <div className="min-w-0">
@@ -1265,7 +1280,7 @@ function RowMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1.5 min-w-[160px] overflow-hidden rounded-[14px] border border-line bg-card p-1 shadow-[0_4px_12px_-2px_rgba(0,0,0,0.08),0_16px_40px_-12px_rgba(0,0,0,0.22)]"
+          className="absolute right-0 top-full z-[200] mt-1.5 min-w-[160px] overflow-hidden rounded-[14px] border border-line bg-card p-1 shadow-[0_4px_12px_-2px_rgba(0,0,0,0.08),0_16px_40px_-12px_rgba(0,0,0,0.22)]"
         >
           {resultsHref && (
             <Link
