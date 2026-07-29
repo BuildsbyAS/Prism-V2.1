@@ -16,10 +16,12 @@ interface Props {
   // Suppress the question label — used by the builder's inline preview (the label
   // is edited above the input) and when the widget's title is toggled off.
   hideLabel?: boolean
+  /** Locks an already-submitted answer while leaving read-only playback visible. */
+  disabled?: boolean
 }
 
 /** Renders a single feedback widget for the voter and reports its value up. */
-export default function WidgetInput({ widget, value, onChange, onBusyChange, hideLabel = false }: Props) {
+export default function WidgetInput({ widget, value, onChange, onBusyChange, hideLabel = false, disabled = false }: Props) {
   const { config } = widget
   const label = config.label || defaultLabel(widget)
 
@@ -33,7 +35,7 @@ export default function WidgetInput({ widget, value, onChange, onBusyChange, hid
       )}
 
       {widget.type === 'rating' && (
-        <Rating allowHalf={Boolean(config.allowHalf)} value={typeof value === 'number' ? value : 0} onChange={onChange} />
+        <Rating allowHalf={Boolean(config.allowHalf)} value={typeof value === 'number' ? value : 0} onChange={onChange} disabled={disabled} />
       )}
 
       {widget.type === 'slider' && (
@@ -44,6 +46,7 @@ export default function WidgetInput({ widget, value, onChange, onBusyChange, hid
           maxLabel={config.maxLabel}
           value={typeof value === 'number' ? value : Math.round(((config.min ?? 0) + (config.max ?? 100)) / 2)}
           onChange={onChange}
+          disabled={disabled}
         />
       )}
 
@@ -56,11 +59,12 @@ export default function WidgetInput({ widget, value, onChange, onBusyChange, hid
                 key={choice}
                 type="button"
                 onClick={() => onChange(choice)}
+                disabled={disabled}
                 className={`flex w-full items-center gap-2.5 rounded-[16px] border px-4 py-2.5 text-left text-sm transition ${
                   selected
                     ? 'border-transparent bg-black/[0.06] font-medium'
                     : 'border-line-strong hover:bg-black/[0.03]'
-                }`}
+                } disabled:cursor-not-allowed disabled:hover:bg-transparent`}
               >
                 <span
                   className={`grid h-4 w-4 place-items-center rounded-full border ${
@@ -80,10 +84,11 @@ export default function WidgetInput({ widget, value, onChange, onBusyChange, hid
         <textarea
           value={typeof value === 'string' ? value : ''}
           onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
           rows={config.long ? 4 : 2}
           maxLength={2000}
           placeholder={config.placeholder || 'Type your answer…'}
-          className="w-full resize-none rounded-xl border border-line bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-muted focus:border-ink"
+          className="w-full resize-none rounded-xl border border-line bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-muted focus:border-ink disabled:cursor-not-allowed disabled:bg-black/[0.03] disabled:text-muted"
         />
       )}
 
@@ -92,6 +97,7 @@ export default function WidgetInput({ widget, value, onChange, onBusyChange, hid
           value={typeof value === 'string' ? value : ''}
           onChange={onChange}
           onBusyChange={onBusyChange}
+          disabled={disabled}
         />
       )}
     </div>
@@ -110,10 +116,12 @@ function VoiceInput({
   value,
   onChange,
   onBusyChange,
+  disabled,
 }: {
   value: string
   onChange: (v: AnswerValue) => void
   onBusyChange?: (busy: boolean) => void
+  disabled?: boolean
 }) {
   const [recording, setRecording] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -182,7 +190,7 @@ function VoiceInput({
     return (
       <div className="flex items-center gap-3">
         <audio src={value} controls className="h-10 w-full min-w-0" />
-        <button type="button" onClick={() => onChange('')} className="flex-none rounded-[14px] border border-line-strong px-3 py-2 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink">
+        <button type="button" onClick={() => onChange('')} disabled={disabled} className="flex-none rounded-[14px] border border-line-strong px-3 py-2 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink disabled:hidden">
           Re-record
         </button>
       </div>
@@ -192,7 +200,7 @@ function VoiceInput({
   return (
     <div className="space-y-2">
       {recording ? (
-        <button type="button" onClick={stop} className="flex w-full items-center justify-center gap-2 rounded-[16px] bg-red-600 px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90">
+        <button type="button" onClick={stop} disabled={disabled} className="flex w-full items-center justify-center gap-2 rounded-[16px] bg-red-600 px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
           <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-white" /> Stop recording · {fmtTime(elapsed)}
         </button>
       ) : saving ? (
@@ -200,7 +208,7 @@ function VoiceInput({
           Saving recording…
         </div>
       ) : (
-        <button type="button" onClick={start} className="flex w-full items-center justify-center gap-2 rounded-[16px] border border-line-strong px-5 py-2.5 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]">
+        <button type="button" onClick={start} disabled={disabled} className="flex w-full items-center justify-center gap-2 rounded-[16px] border border-line-strong px-5 py-2.5 text-[14px] font-medium text-ink transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:bg-black/[0.03] disabled:text-muted">
           <Microphone size={16} aria-hidden="true" /> Record a voice note
         </button>
       )}
@@ -224,28 +232,30 @@ function defaultLabel(w: Widget): string {
   }
 }
 
-function Rating({ allowHalf, value, onChange }: { allowHalf: boolean; value: number; onChange: (n: number) => void }) {
+function Rating({ allowHalf, value, onChange, disabled = false }: { allowHalf: boolean; value: number; onChange: (n: number) => void; disabled?: boolean }) {
   // Preview the rating the pointer is over; fall back to the committed value.
   const [hover, setHover] = useState<number | null>(null)
   const shown = hover ?? value
   return (
-    <div className="flex gap-1.5" onMouseLeave={() => setHover(null)}>
+    <div className={`flex gap-1.5 ${disabled ? 'opacity-70' : ''}`} onMouseLeave={() => setHover(null)}>
       {Array.from({ length: 5 }, (_, i) => i + 1).map((n) => (
         <div key={n} className="relative h-[30px] w-[30px]">
           <Star fill={shown >= n ? 1 : shown >= n - 0.5 ? 0.5 : 0} />
           {allowHalf && (
             <button
               type="button"
+              disabled={disabled}
               aria-label={`${n - 0.5} stars`}
-              onMouseEnter={() => setHover(n - 0.5)}
+              onMouseEnter={() => !disabled && setHover(n - 0.5)}
               onClick={() => onChange(n - 0.5)}
               className="absolute inset-y-0 left-0 z-10 w-1/2"
             />
           )}
           <button
             type="button"
+            disabled={disabled}
             aria-label={`${n} star${n > 1 ? 's' : ''}`}
-            onMouseEnter={() => setHover(n)}
+            onMouseEnter={() => !disabled && setHover(n)}
             onClick={() => onChange(n)}
             className={allowHalf ? 'absolute inset-y-0 right-0 w-1/2' : 'absolute inset-0'}
           />
@@ -291,6 +301,7 @@ function Slider({
   maxLabel,
   value,
   onChange,
+  disabled = false,
 }: {
   min: number
   max: number
@@ -298,6 +309,7 @@ function Slider({
   maxLabel?: string
   value: number
   onChange: (n: number) => void
+  disabled?: boolean
 }) {
   return (
     <div>
@@ -307,7 +319,8 @@ function Slider({
         max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-[#18191d]"
+        disabled={disabled}
+        className="w-full accent-[#18191d] disabled:cursor-not-allowed disabled:opacity-60"
       />
       <div className="mt-1 flex items-center justify-between text-[14px] text-muted">
         <span>{minLabel || min}</span>

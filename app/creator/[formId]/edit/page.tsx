@@ -14,7 +14,6 @@ import {
   dupOption,
   dupWidget,
   readiness,
-  publishBlocker,
   publishDetailsMissing,
   pageReady,
   pageHasContent,
@@ -81,6 +80,9 @@ export default function BuilderPage() {
   const [mediaFor, setMediaFor] = useState<string | null>(null)
   const [heroMedia, setHeroMedia] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
+  // Set only after Publish is pressed. It keeps validation quiet while the
+  // creator is drafting, then marks the first screen that needs attention.
+  const [publishErrorScreen, setPublishErrorScreen] = useState<string | null>(null)
   const [flashInputs, setFlashInputs] = useState(false)
   // The input card the canvas has just scrolled to, pulsed for a beat on arrival.
   const [flashWidget, setFlashWidget] = useState<string | null>(null)
@@ -533,15 +535,36 @@ export default function BuilderPage() {
   const dirty = published && publishedSnapshot !== null && snapshot(form, pages, options, widgets) !== publishedSnapshot
   const publishLabel = !published ? 'Publish form' : dirty ? 'Publish changes' : 'Published'
 
-  const blocker = publishBlocker(ready, pages)
-  // Content is completed in the builder, so gate it here. Release details live
-  // in the dialog instead; its action stays clickable when those fields are
-  // blank so pressing it can mark each missing value with an inline error.
+  const feedbackPages = pages.filter((p) => p.type === 'feedback')
+  const missingFeedbackPage = feedbackPages.length === 0
+
+  function firstPublishErrorScreen(): string | null {
+    if (!ready.welcome) return 'welcome'
+    const unfinished = feedbackPages.find((p) => !pageReady(p, options, widgets))
+    if (unfinished) return unfinished.id
+    if (missingFeedbackPage) return pages[0]?.id ?? 'welcome'
+    return null
+  }
+
+  function openPublish() {
+    const invalidScreen = firstPublishErrorScreen()
+    if (invalidScreen) {
+      setPublishErrorScreen(invalidScreen)
+      goToScreen(invalidScreen)
+      return
+    }
+    setPublishErrorScreen(null)
+    setShareOpen(true)
+  }
+
+  // Publish stays actionable so it can lead the creator to the first content
+  // error. Release details live in the dialog, whose own action remains
+  // clickable and reports missing fields inline.
   const publishButton = (
     <button
       type="button"
-      onClick={() => setShareOpen(true)}
-      disabled={!ready.publishable}
+      onClick={openPublish}
+      disabled={published && !dirty}
       className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {publishLabel}
@@ -642,17 +665,7 @@ export default function BuilderPage() {
         <div className="hidden md:block">
           <DeviceSwitch value={device} onChange={setDevice} />
         </div>
-        {/* A disabled control cannot explain itself, so a focusable wrapper
-            keeps the readiness blocker available to pointer and keyboard users. */}
-        {locked ? null : blocker ? (
-          <Tooltip label={blocker}>
-            <span tabIndex={0} aria-label={blocker} className="inline-flex rounded-[16px] outline-none focus-visible:ring-2 focus-visible:ring-ink/25">
-              {publishButton}
-            </span>
-          </Tooltip>
-        ) : (
-          publishButton
-        )}
+        {locked ? null : publishButton}
       </FormHeader>
 
       {/* --rail and --panel are the two draggable columns (see PanelResizer).
@@ -752,7 +765,14 @@ export default function BuilderPage() {
               }`}
             >
               <div className={`w-full ${screenFit ? 'md:h-full' : ''}`}>
-                {screen.id === 'welcome' && <WelcomeCenter form={form} onChange={patchForm} onOpenHeroMedia={() => setHeroMedia(true)} />}
+                {screen.id === 'welcome' && (
+                  <WelcomeCenter
+                    form={form}
+                    onChange={patchForm}
+                    onOpenHeroMedia={() => setHeroMedia(true)}
+                    showPublishErrors={publishErrorScreen === 'welcome'}
+                  />
+                )}
                 {screen.page && (
                   <PageCenter
                     page={screen.page}
@@ -777,6 +797,8 @@ export default function BuilderPage() {
                     patchWidget={patchWidget}
                     optionFull={pageOptions.length >= MAX_OPTIONS}
                     readOnly={locked}
+                    showPublishErrors={publishErrorScreen === screen.page.id}
+                    missingFeedbackPage={missingFeedbackPage}
                   />
                 )}
                 {screen.id === 'end' && (

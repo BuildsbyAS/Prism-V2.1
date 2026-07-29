@@ -35,15 +35,17 @@ export function InlineTextArea({
   placeholder,
   className = '',
   rows = 1,
+  ...rest
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   className?: string
   rows?: number
-}) {
+} & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
   return (
     <textarea
+      {...rest}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}

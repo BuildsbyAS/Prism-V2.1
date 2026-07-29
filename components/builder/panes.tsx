@@ -16,7 +16,20 @@ import { MediaIconBtn, EditGlyph, DeleteGlyph, ExpandGlyph } from './controls'
 
 /* ------------------------------- Welcome --------------------------------- */
 
-export function WelcomeCenter({ form, onChange, onOpenHeroMedia }: { form: Form; onChange: (p: Partial<Form>) => void; onOpenHeroMedia?: () => void }) {
+export function WelcomeCenter({
+  form,
+  onChange,
+  onOpenHeroMedia,
+  showPublishErrors = false,
+}: {
+  form: Form
+  onChange: (p: Partial<Form>) => void
+  onOpenHeroMedia?: () => void
+  showPublishErrors?: boolean
+}) {
+  const missingTitle = showPublishErrors && !form.title.trim()
+  const missingBody = showPublishErrors && !form.body_copy.trim()
+  const missingHero = showPublishErrors && !form.hero_image_url.trim()
   return (
     // Full-bleed two-column hero: the negative margins cancel the canvas card's
     // padding so the backdrop runs edge to edge, exactly as the voter sees it.
@@ -36,8 +49,26 @@ export function WelcomeCenter({ form, onChange, onOpenHeroMedia }: { form: Form;
         {/* font-pixel: these editors stand in for the voter's <h1>/<h2>, which the
             global heading rule renders in the pixel face — a textarea isn't a
             heading, so it has to opt in explicitly or the preview would lie. */}
-        <InlineTextArea value={form.title} onChange={(v) => onChange({ title: v })} placeholder="What are we testing?" className="px-2 py-1 font-pixel text-3xl font-semibold leading-tight tracking-tight sm:text-[34px]" />
-        <InlineTextArea value={form.body_copy} onChange={(v) => onChange({ body_copy: v })} placeholder="Add the context voters read before they start…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
+        <InlineTextArea
+          value={form.title}
+          onChange={(v) => onChange({ title: v })}
+          placeholder="What are we testing?"
+          aria-invalid={missingTitle}
+          className={`px-2 py-1 font-pixel text-3xl font-semibold leading-tight tracking-tight sm:text-[34px] ${
+            missingTitle ? 'bg-red-50 ring-2 ring-red-500/70' : ''
+          }`}
+        />
+        {missingTitle && <p role="alert" className="px-2 text-[13px] font-medium text-red-600">Add an introduction title.</p>}
+        <InlineTextArea
+          value={form.body_copy}
+          onChange={(v) => onChange({ body_copy: v })}
+          placeholder="Add the context voters read before they start…"
+          aria-invalid={missingBody}
+          className={`px-2 py-1 text-[15px] leading-relaxed text-muted ${
+            missingBody ? 'bg-red-50 ring-2 ring-red-500/70' : ''
+          }`}
+        />
+        {missingBody && <p role="alert" className="px-2 text-[13px] font-medium text-red-600">Add introduction context.</p>}
       </div>
       {form.hero_image_url ? (
         <HeroPanel bg={form.hero_bg} dither={form.hero_dither} className="h-[60vh] md:h-full">
@@ -52,8 +83,17 @@ export function WelcomeCenter({ form, onChange, onOpenHeroMedia }: { form: Form;
            could offer is a file picker, so the empty zone opens the OS one
            directly and saves a click. The modal is still what Edit opens once
            there's an image — that's where replacing and the backdrop live. */
-        <div className="px-[28px] pb-10 @4xl:h-full @4xl:py-14 @4xl:pl-0">
+        <div
+          className={`relative px-[28px] pb-10 @4xl:h-full @4xl:py-14 @4xl:pl-0 ${
+            missingHero ? 'rounded-2xl bg-red-50 ring-2 ring-inset ring-red-500/70' : ''
+          }`}
+        >
           <ImageUpload value="" onChange={(v) => onChange({ hero_image_url: v })} />
+          {missingHero && (
+            <p role="alert" className="absolute bottom-3 left-[28px] text-[13px] font-medium text-red-600 @4xl:bottom-5">
+              Add an introduction image.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -82,6 +122,8 @@ export function PageCenter({
   patchWidget,
   optionFull,
   readOnly = false,
+  showPublishErrors = false,
+  missingFeedbackPage = false,
 }: {
   page: Page
   options: Option[]
@@ -106,22 +148,39 @@ export function PageCenter({
    *  The whole canvas is inert anyway — these would be unreachable prompts to do
    *  something the form can't do. */
   readOnly?: boolean
+  showPublishErrors?: boolean
+  /** The form contains context pages only, so publishing needs one changed to Get Vote. */
+  missingFeedbackPage?: boolean
 }) {
   const feedback = page.type === 'feedback'
+  const missingTitle = showPublishErrors && feedback && !page.title.trim()
+  const missingResponseContent =
+    showPublishErrors &&
+    feedback &&
+    !(options.length >= 2 || (options.length >= 1 && widgets.length >= 1))
   // One viewer for the whole page rather than one per card: only one can be open
   // at a time, and the option it holds is all that differs.
   const [zoom, setZoom] = useState<Option | null>(null)
   return (
     <div className="space-y-8">
       {zoom && <MediaLightbox media={optionMedia(zoom)} onClose={() => setZoom(null)} />}
+      {showPublishErrors && missingFeedbackPage && (
+        <p role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-[14px] font-medium text-red-700">
+          This form needs at least one Get Vote page. Change this page to Get Vote in Properties, or add one.
+        </p>
+      )}
       {/* Page heading */}
       <div className="flex flex-col">
         <InlineTextArea
           value={page.title}
           onChange={(v) => onPageChange({ title: v })}
           placeholder={feedback ? 'What are we comparing?' : 'Section title'}
-          className="px-0 py-1 font-pixel text-2xl font-semibold tracking-tight"
+          aria-invalid={missingTitle}
+          className={`px-2 py-1 font-pixel text-2xl font-semibold tracking-tight ${
+            missingTitle ? 'bg-red-50 ring-2 ring-red-500/70' : ''
+          }`}
         />
+        {missingTitle && <p role="alert" className="px-2 text-[13px] font-medium text-red-600">Add a title for this Get Vote page.</p>}
         <InlineTextArea
           value={page.body}
           onChange={(v) => onPageChange({ body: v })}
@@ -131,7 +190,9 @@ export function PageCenter({
       </div>
 
       {/* Options / media */}
-      <section>
+      <section
+        className={missingResponseContent ? 'rounded-2xl bg-red-50 p-3 ring-2 ring-red-500/70' : ''}
+      >
         <p className="mb-3 text-[13px] font-medium text-muted">
           {feedback ? `Options to compare · ${options.length}/4` : `Media · ${options.length}`}
         </p>
@@ -161,6 +222,11 @@ export function PageCenter({
             </button>
           )}
         </div>
+        {missingResponseContent && (
+          <p role="alert" className="mt-3 text-[13px] font-medium text-red-600">
+            Add at least 2 options, or 1 option and a feedback input.
+          </p>
+        )}
         {feedback && options.length >= 2 && (
           <label
             className={`mt-4 flex items-center gap-3 rounded-2xl border px-4 py-3.5 transition ${
