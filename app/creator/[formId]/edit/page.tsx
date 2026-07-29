@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
-import { getFullForm, saveFullForm } from '@/lib/store'
+import { getFullForm, saveFullForm, isStorageFull } from '@/lib/store'
 import {
   newPage,
   newOption,
@@ -13,21 +13,29 @@ import {
   dupOption,
   dupWidget,
   readiness,
+  publishBlocker,
+  publishDetailsMissing,
   pageReady,
+  pageHasContent,
+  formName,
   PAGE_META,
   MAX_OPTIONS,
   MAX_WIDGETS,
   type Selection,
 } from '@/lib/builder'
-import UserMenu from '@/components/UserMenu'
 import HoverHighlight from '@/components/HoverHighlight'
 import Tooltip from '@/components/Tooltip'
+import ConfirmDialog from '@/components/ConfirmDialog'
+import MobileFormView from '@/components/builder/MobileFormView'
+import { useIsMobile } from '@/lib/useIsMobile'
 import { WelcomeCenter, PageCenter } from '@/components/builder/panes'
 import { EndScreenCenter, ShareDialog } from '@/components/builder/Share'
 import { PageProperties, OptionProperties, InputProperties, WelcomeProperties, EndProperties } from '@/components/builder/properties'
 import DeviceSwitch, { DEVICE_MAX_WIDTH, type Device } from '@/components/builder/DeviceSwitch'
+import FormHeader from '@/components/builder/FormHeader'
+import CanvasNudge from '@/components/builder/CanvasNudge'
 import MediaModal from '@/components/builder/MediaModal'
-import PreviewOverlay from '@/components/builder/PreviewOverlay'
+import PanelResizer, { useRailWidth, usePanelWidth } from '@/components/builder/PanelResizer'
 
 function snapshot(form: Form, pages: Page[], options: Option[], widgets: Widget[]): string {
   return JSON.stringify({
@@ -35,6 +43,7 @@ function snapshot(form: Form, pages: Page[], options: Option[], widgets: Widget[
     b: form.body_copy,
     h: form.hero_image_url,
     hbg: form.hero_bg,
+    hd: form.hero_dither,
     ty: form.thank_you_message,
     sr: form.show_results_to_voters,
     rl: form.require_voter_login,
@@ -44,6 +53,14 @@ function snapshot(form: Form, pages: Page[], options: Option[], widgets: Widget[
     o: options,
     w: widgets,
   })
+}
+
+/** The sticky topbar's height — a card tucked under it counts as out of view. */
+const TOPBAR_HEIGHT = 56
+
+/** Screen ids are 'welcome', 'end', or a page id — see the canvas scrollspy. */
+function selectionFor(screen: string): Selection {
+  return screen === 'welcome' ? { kind: 'welcome' } : screen === 'end' ? { kind: 'end' } : { kind: 'page', id: screen }
 }
 
 export default function BuilderPage() {
@@ -59,15 +76,101 @@ export default function BuilderPage() {
   const [device, setDevice] = useState<Device>('desktop')
   const [mediaFor, setMediaFor] = useState<string | null>(null)
   const [heroMedia, setHeroMedia] = useState(false)
-  const [previewOpen, setPreviewOpen] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [flashInputs, setFlashInputs] = useState(false)
+  // The input card the canvas has just scrolled to, pulsed for a beat on arrival.
+  const [flashWidget, setFlashWidget] = useState<string | null>(null)
+  // The page a confirmation is open for, and what it's about to do to it.
+  const [pageAction, setPageAction] = useState<{ id: string; kind: 'delete' | 'clear' } | null>(null)
+  const [nudgeDismissed, setNudgeDismissed] = useState(false)
   const clearFlashInputs = useCallback(() => setFlashInputs(false), [])
   const [origin] = useState(() => (typeof window !== 'undefined' ? window.location.origin : ''))
+  const rail = useRailWidth()
+  const panel = usePanelWidth()
   const [publishedSnapshot, setPublishedSnapshot] = useState<string | null>(null)
+  // Non-null when the last autosave failed — surfaced as a banner, because the
+  // builder otherwise looks identical whether or not the write landed.
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const isMobile = useIsMobile()
 
   const loadedRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /**
+   * A closed form is a record, not a draft. The builder still opens — the
+   * creator can read back what was asked, and preview it — but nothing in it
+   * can change.
+   *
+   * Enforced twice over. The editing columns go `inert`, which is what the
+   * creator sees; and every mutator below returns early, so a control that
+   * forgets to disable itself still cannot write.
+   */
+  const locked = form?.status === 'closed'
+
+  // ---- Which screen the canvas shows ---------------------------------------
+  // One screen at a time, chosen from the rail. The canvas used to stack all of
+  // them in a snapping scroll with an IntersectionObserver spy deciding which
+  // one you were "on" — two ways to navigate that had to be kept in step, and a
+  // long scroll between the page you were editing and the next. The rail is now
+  // the only way through the form, so the canvas is just the selected screen.
+  //
+  // Options and inputs are edited in place on a page, so they resolve to that
+  // page's screen — selecting one must not blank the canvas.
+  const activeScreen =
+    sel.kind === 'welcome' || sel.kind === 'end'
+      ? sel.kind
+      : sel.kind === 'page'
+        ? sel.id
+        : (sel.kind === 'option' ? options.find((o) => o.id === sel.key) : widgets.find((w) => w.id === sel.key))?.page_id ?? 'welcome'
+
+  const goToScreen = useCallback((id: string) => setSel(selectionFor(id)), [])
+
+  /**
+   * Bring an input's card into view on the canvas and pulse it once.
+   *
+   * The rail sits beside a canvas that scrolls independently, and the options
+   * grid above the inputs is tall — so both adding an input and selecting one
+   * routinely act on a card that's below the fold. Attention has to land on the
+   * card, not on a panel describing one you can't see.
+   *
+   * Deferred a task: on `addInput` the card doesn't exist yet when the click is
+   * handled. React flushes a discrete event's updates before yielding, so by the
+   * next macrotask the new card is in the DOM and measurable — reading it inline
+   * only ever worked for cards that were already there.
+   *
+   * Only when it's actually off-screen. A card you clicked on the canvas is
+   * already in front of you, and flashing on every selection would make the
+   * pulse mean "selected" rather than "it moved".
+   */
+  const revealWidget = useCallback((key: string) => {
+    setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(`[data-widget="${key}"]`)
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      if (r.top >= TOPBAR_HEIGHT && r.bottom <= window.innerHeight) return
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setFlashWidget(key)
+      if (flashTimer.current) clearTimeout(flashTimer.current)
+      flashTimer.current = setTimeout(() => setFlashWidget(null), 1000)
+    }, 0)
+  }, [])
+
+  /** Select an input from the properties rail, and scroll the canvas to it. */
+  const revealInput = useCallback(
+    (key: string) => {
+      setSel({ kind: 'input', key })
+      revealWidget(key)
+    },
+    [revealWidget],
+  )
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) clearTimeout(flashTimer.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     getFullForm(formId).then((f) => {
@@ -81,16 +184,28 @@ export default function BuilderPage() {
   }, [formId])
 
   const persist = useCallback(async (f: Form, pg: Page[], opts: Option[], wids: Widget[]) => {
-    await saveFullForm({
-      form: f,
-      pages: pg.map((p, i) => ({ ...p, order_index: i })),
-      options: opts.map((o, i) => ({ ...o, order_index: i })),
-      widgets: wids.map((w, i) => ({ ...w, order_index: i })),
-    })
+    try {
+      await saveFullForm({
+        form: f,
+        pages: pg.map((p, i) => ({ ...p, order_index: i })),
+        options: opts.map((o, i) => ({ ...o, order_index: i })),
+        widgets: wids.map((w, i) => ({ ...w, order_index: i })),
+      })
+      setSaveError(null)
+    } catch (e) {
+      // An autosave that fails silently is indistinguishable from one that
+      // worked: the canvas keeps showing React state while storage holds the
+      // last version that fit, and only the preview gives it away. Say so.
+      setSaveError(
+        isStorageFull(e)
+          ? 'Out of browser storage — recent changes aren’t saved. Remove some uploaded media, or connect Supabase.'
+          : 'Couldn’t save your changes.',
+      )
+    }
   }, [])
 
   useEffect(() => {
-    if (!form) return
+    if (!form || locked) return
     if (!loadedRef.current) {
       loadedRef.current = true
       return
@@ -100,15 +215,28 @@ export default function BuilderPage() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
-  }, [form, pages, options, widgets, persist])
+  }, [form, pages, options, widgets, persist, locked])
 
-  const patchForm = useCallback((p: Partial<Form>) => setForm((f) => (f ? { ...f, ...p } : f)), [])
-  const patchPage = useCallback((id: string, p: Partial<Page>) => setPages((ps) => ps.map((x) => (x.id === id ? { ...x, ...p } : x))), [])
-  const patchOption = useCallback((key: string, p: Partial<Option>) => setOptions((os) => os.map((o) => (o.id === key ? { ...o, ...p } : o))), [])
-  const patchWidget = useCallback((key: string, p: Partial<Widget>) => setWidgets((ws) => ws.map((w) => (w.id === key ? { ...w, ...p } : w))), [])
+  const patchForm = useCallback((p: Partial<Form>) => {
+    if (locked) return
+    setForm((f) => (f ? { ...f, ...p } : f))
+  }, [locked])
+  const patchPage = useCallback((id: string, p: Partial<Page>) => {
+    if (locked) return
+    setPages((ps) => ps.map((x) => (x.id === id ? { ...x, ...p } : x)))
+  }, [locked])
+  const patchOption = useCallback((key: string, p: Partial<Option>) => {
+    if (locked) return
+    setOptions((os) => os.map((o) => (o.id === key ? { ...o, ...p } : o)))
+  }, [locked])
+  const patchWidget = useCallback((key: string, p: Partial<Widget>) => {
+    if (locked) return
+    setWidgets((ws) => ws.map((w) => (w.id === key ? { ...w, ...p } : w)))
+  }, [locked])
 
   // Pages
   function addPage(type: PageType, afterIndex = pages.length - 1) {
+    if (locked) return
     if (!form) return
     const page = newPage(form.id, type, 0)
     setPages((ps) => {
@@ -126,12 +254,52 @@ export default function BuilderPage() {
     setSel({ kind: 'page', id: page.id })
   }
   function deletePage(id: string) {
+    if (locked) return
     setPages((ps) => ps.filter((p) => p.id !== id))
     setOptions((os) => os.filter((o) => o.page_id !== id))
     setWidgets((ws) => ws.filter((w) => w.page_id !== id))
     setSel({ kind: 'welcome' })
   }
+  /**
+   * Empty a page without removing it: the title and body go, its inputs go, and
+   * a feedback page comes back seeded with the A/B pair a new one starts with.
+   * This is what "delete" becomes for the last page standing.
+   */
+  function clearPage(id: string) {
+    if (locked) return
+    const page = pages.find((p) => p.id === id)
+    if (!page || !form) return
+    setPages((ps) => ps.map((p) => (p.id === id ? { ...p, title: '', body: '' } : p)))
+    setWidgets((ws) => ws.filter((w) => w.page_id !== id))
+    setOptions((os) => {
+      const rest = os.filter((o) => o.page_id !== id)
+      return page.type === 'feedback'
+        ? [...rest, newOption(form.id, id, rest.length, 0), newOption(form.id, id, rest.length + 1, 1)]
+        : rest
+    })
+    setSel({ kind: 'page', id })
+  }
+  /**
+   * Deleting takes a page's options and inputs with it and there's no undo, so
+   * anything with work in it asks first. A page you just added is still blank —
+   * confirming that would be friction for nothing — so it goes immediately.
+   *
+   * The exception is the last page: a form with only a welcome and an end screen
+   * asks the voter for nothing, so that page can't be deleted, only emptied.
+   * Clearing always confirms — unlike deleting a blank page, there is no version
+   * of it that costs nothing, and the button is disabled when it would be a
+   * no-op (see `canClearPage`).
+   */
+  function requestDeletePage(id: string) {
+    if (locked) return
+    const page = pages.find((p) => p.id === id)
+    if (!page) return
+    const kind = pages.length === 1 ? 'clear' : 'delete'
+    if (kind === 'delete' && !pageHasContent(page, options, widgets)) deletePage(id)
+    else setPageAction({ id, kind })
+  }
   function duplicatePage(id: string) {
+    if (locked) return
     const page = pages.find((p) => p.id === id)
     if (!page) return
     const copy = dupPage(page)
@@ -146,6 +314,7 @@ export default function BuilderPage() {
     setSel({ kind: 'page', id: copy.id })
   }
   function reorderPages(from: number, to: number) {
+    if (locked) return
     setPages((ps) => {
       const next = ps.slice()
       const [item] = next.splice(from, 1)
@@ -156,6 +325,7 @@ export default function BuilderPage() {
 
   // Options / inputs (scoped to a page)
   function addOption(pageId: string) {
+    if (locked) return
     if (!form) return
     const count = options.filter((o) => o.page_id === pageId).length
     const o = newOption(form.id, pageId, options.length, count)
@@ -163,17 +333,23 @@ export default function BuilderPage() {
     setSel({ kind: 'option', key: o.id })
   }
   function removeOption(key: string) {
+    if (locked) return
     const o = options.find((x) => x.id === key)
     setOptions((os) => os.filter((x) => x.id !== key))
     if (o) setSel({ kind: 'page', id: o.page_id })
   }
   function addInput(pageId: string, type: WidgetType) {
+    if (locked) return
     if (!form) return
     const w = newWidget(form.id, pageId, type, widgets.length)
     setWidgets((ws) => [...ws, w])
     setSel({ kind: 'input', key: w.id })
+    // A new input lands under the options grid, which is usually taller than the
+    // canvas — without this the click reads as "nothing happened".
+    revealWidget(w.id)
   }
   function removeInput(key: string) {
+    if (locked) return
     const w = widgets.find((x) => x.id === key)
     setWidgets((ws) => ws.filter((x) => x.id !== key))
     if (w) setSel({ kind: 'page', id: w.page_id })
@@ -188,36 +364,43 @@ export default function BuilderPage() {
     )
   }, [])
   function openMedia(key: string) {
+    if (locked) return
     setSel({ kind: 'option', key })
     setMediaFor(key)
   }
 
   function publish() {
+    if (locked) return
     if (!form) return
+    // Belt and braces with the dialog's disabled button. A live form has to be
+    // attributable (name, pod) and time-boxed (expiry) as much as it has to have
+    // content, and this is the one function that flips the status.
+    if (!ready.publishable || publishDetailsMissing(form).length > 0) return
     const next: Form = { ...form, status: 'open', published_at: new Date().toISOString() }
     setForm(next)
     setPublishedSnapshot(snapshot(next, pages, options, widgets))
   }
   function unpublish() {
+    if (locked) return
     patchForm({ status: 'draft' })
     setPublishedSnapshot(null)
   }
 
-  async function openPreview() {
-    if (!form) return
-    // Flush the latest edits so the previewed iframe reads current state.
+  /**
+   * Write pending edits before the Preview or Results tab takes over. Both read
+   * the saved form — the preview literally re-fetches it in an iframe — so a
+   * debounced save still in flight would show them the previous version.
+   */
+  async function flushSave() {
+    if (!form || locked) return
     if (saveTimer.current) clearTimeout(saveTimer.current)
     await persist(form, pages, options, widgets)
-    setPreviewOpen(true)
   }
 
   if (notFound) {
     return (
       <>
-        <Topbar>
-          <Breadcrumb />
-          <UserMenu />
-        </Topbar>
+        <FormHeader formId={formId} tab="edit" />
         <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
           <h1 className="text-xl font-semibold">Form not found</h1>
           <Link href="/creator" className="mt-5 inline-block rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white">← Back to forms</Link>
@@ -228,14 +411,16 @@ export default function BuilderPage() {
   if (!form) {
     return (
       <>
-        <Topbar>
-          <Breadcrumb />
-          <UserMenu />
-        </Topbar>
+        <FormHeader formId={formId} tab="edit" />
         <div className="mx-auto max-w-[1100px] px-6 py-16 text-[14px] text-muted">Loading builder…</div>
       </>
     )
   }
+
+  // On a phone this route is read-only: the builder needs three columns of real
+  // width, so instead of a stack nobody can work in, show the form as a voter
+  // sees it. Placed after the load guards so the preview has a form to render.
+  if (isMobile) return <MobileFormView form={form} published={form.status === 'open'} />
 
   // Derived focus
   const selectedOption = sel.kind === 'option' ? options.find((o) => o.id === sel.key) ?? null : null
@@ -246,46 +431,189 @@ export default function BuilderPage() {
   const currentPage = currentPageId ? pages.find((p) => p.id === currentPageId) ?? null : null
   const pageOptions = currentPage ? options.filter((o) => o.page_id === currentPage.id) : []
   const pageWidgets = currentPage ? widgets.filter((w) => w.page_id === currentPage.id) : []
-  const currentPageIndex = currentPage ? pages.findIndex((p) => p.id === currentPage.id) : -1
+
+  // Every screen, in voter order; the canvas shows the selected one. A deleted
+  // page can leave `sel` pointing at nothing for a render, so fall back to the
+  // welcome screen rather than an empty canvas.
+  const screens = [
+    { id: 'welcome', label: 'Introduction page', page: null as Page | null },
+    ...pages.map((p) => ({ id: p.id, label: p.title || PAGE_META[p.type].label, page: p as Page | null })),
+    { id: 'end', label: 'End screen', page: null as Page | null },
+  ]
+  const screen = screens.find((s) => s.id === activeScreen) ?? screens[0]
+  // The introduction screen is the one preview that models a *full viewport* (the
+  // voter's split hero runs edge to edge, no scroll) rather than a document, so
+  // its card is sized as a screen and the hero scales down inside it. Every other
+  // screen keeps its natural height.
+  const screenFit = screen.id === 'welcome'
+  // On desktop that screen is a laptop window, so the card is locked to a
+  // MacBook 14" display's proportions instead of stretching to whatever height
+  // the editor column happens to have — which made the preview taller and taller
+  // on a big monitor and lied about how much copy sits above the fold. Tablet and
+  // mobile keep filling the column; their widths already imply the device.
+  const laptopAspect = screenFit && device === 'desktop'
+  const fillHeight = screenFit && !laptopAspect
 
   const ready = readiness(form, pages, options, widgets)
   const publicUrl = `${origin}/f/${form.slug}`
   const published = form.status === 'open'
   const dirty = published && publishedSnapshot !== null && snapshot(form, pages, options, widgets) !== publishedSnapshot
   const publishLabel = !published ? 'Publish form' : dirty ? 'Publish changes' : 'Published'
-  const screenLabel = sel.kind === 'welcome' ? 'Welcome screen' : sel.kind === 'end' ? 'End screen' : currentPage ? PAGE_META[currentPage.type].label : ''
-  const previewStart = sel.kind === 'welcome' ? 'welcome' : sel.kind === 'end' ? 'end' : currentPage?.id ?? 'welcome'
+
+  const blocker = publishBlocker(ready, pages)
+  // Only blocked before the first publish. Once a form is live this button is
+  // also the way to its share link and to unpublishing, so disabling it would
+  // trap a published form whose last Get Vote page was switched to Set Context.
+  // That case is caught inside the dialog instead, where the checklist can say
+  // which item is missing.
+  const publishBlocked = Boolean(blocker) && !published
+  // aria-disabled, not disabled: browsers don't dispatch hover events to a
+  // disabled control and skip it in the tab order, so the tooltip explaining
+  // *why* it's blocked would be unreachable by mouse and keyboard alike.
+  const publishButton = (
+    <button
+      type="button"
+      aria-disabled={publishBlocked}
+      onClick={() => {
+        if (!publishBlocked) setShareOpen(true)
+      }}
+      className={`rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition ${
+        publishBlocked ? 'cursor-not-allowed opacity-40' : 'hover:opacity-90'
+      }`}
+    >
+      {publishLabel}
+    </button>
+  )
+
+  /**
+   * "Your introduction is done — now set up what people vote on."
+   *
+   * Shown on the introduction screen once its title and subtitle are in, and
+   * only while there is still no finished Get Vote page. That second condition
+   * is what keeps this from nagging: it stops appearing for good the moment the
+   * form can actually collect a response, so it needs no dismissal to remember
+   * and no "seen it" flag in storage. The × is only for the current sitting.
+   */
+  const firstVotePage = pages.find((p) => p.type === 'feedback')
+  const showIntroNudge = !locked && screen.id === 'welcome' && ready.welcome && !ready.middle && !nudgeDismissed
+
+  // The last page can only be emptied, so the rail and the properties panel both
+  // offer Clear in place of Delete — and only when there is something to clear.
+  const lastPage = pages.length === 1
+  const canClearPage = currentPage ? pageHasContent(currentPage, options, widgets) : false
+
+  // Name what the action takes with it, so the confirmation is worth reading.
+  const actionTarget = pageAction ? pages.find((p) => p.id === pageAction.id) ?? null : null
+  // Quoted rather than suffixed with "?" — page titles are usually questions
+  // themselves, and "Delete Which headline is fastest??" reads like a typo.
+  const actionTitle =
+    pageAction && actionTarget
+      ? `${pageAction.kind === 'clear' ? 'Clear' : 'Delete'} “${actionTarget.title.trim() || PAGE_META[actionTarget.type].label}”`
+      : ''
+  const actionSummary = (() => {
+    if (!pageAction || !actionTarget) return undefined
+    const opts = options.filter((o) => o.page_id === actionTarget.id).length
+    const wids = widgets.filter((w) => w.page_id === actionTarget.id).length
+    const noun = actionTarget.type === 'feedback' ? 'option' : 'media item'
+    const parts: string[] = []
+    if (opts) parts.push(`${opts} ${opts === 1 ? noun : `${noun}s`}`)
+    if (wids) parts.push(`${wids} feedback ${wids === 1 ? 'input' : 'inputs'}`)
+    if (pageAction.kind === 'clear') {
+      // Say that the page survives — it's the one thing a creator reaching for
+      // "delete" won't expect, and it's why the button isn't called Delete.
+      const what = parts.length ? `Its title and ${parts.join(' and ')} go` : 'Its title and body go'
+      return `${what}. The page stays — a form needs one — and starts over empty. This can’t be undone.`
+    }
+    if (!parts.length) return 'This can’t be undone.'
+    const verb = opts + wids === 1 ? 'goes' : 'go'
+    return `Its ${parts.join(' and ')} ${verb} with it. This can’t be undone.`
+  })()
 
   return (
     <>
-      <Topbar>
-        <Breadcrumb title={form.title} onRename={(v) => patchForm({ title: v })} />
-        <span className="hidden text-[14px] text-muted sm:inline">All changes autosaved</span>
-        <div className="flex items-center gap-3 text-[14px]">
-          {published && (
-            <Link href={`/creator/${formId}/results`} className="rounded-[16px] border border-line px-3 py-1.5 font-medium text-ink transition hover:bg-black/[0.03]">
-              See results ↗
-            </Link>
-          )}
-          <button type="button" onClick={openPreview} className="rounded-[16px] border border-line px-3 py-1.5 font-medium text-ink transition hover:bg-black/[0.03]">
-            Preview ↗
-          </button>
-          <button type="button" onClick={() => setShareOpen(true)} className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90">
-            {publishLabel}
-          </button>
-          <div className="mx-0.5 h-5 w-px bg-line" />
-          <UserMenu />
+      <FormHeader
+        formId={formId}
+        tab="edit"
+        // Renames the form, not the welcome headline it starts out showing.
+        // Without a handler the name renders as plain text, which is what a
+        // closed form wants.
+        name={formName(form)}
+        onRename={locked ? undefined : (v) => patchForm({ name: v })}
+        // Preview opens on the screen you were editing rather than back at the
+        // introduction every time.
+        previewQuery={`?start=${encodeURIComponent(activeScreen)}`}
+        beforeLeave={flushSave}
+        status={
+          locked && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-closed-bg px-2.5 py-1 text-[13px] font-medium text-closed">
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              Closed · read-only
+            </span>
+          )
+        }
+      >
+        {/* Save status first, then the actions — status is a passive note, so
+            it reads before the buttons rather than splitting them. The device
+            switch previews the canvas, so it sits with them too; the centre of
+            the bar belongs to the view tabs. */}
+        {/* "All changes autosaved" is a claim, so it only stands while it's
+            true. A failed write says so instead — and stays visible at every
+            width, unlike the reassurance, which is fine to drop on a narrow bar. */}
+        {!locked &&
+          (saveError ? (
+            <span
+              role="status"
+              title={saveError}
+              className="inline-flex max-w-[280px] items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-1 text-[13px] font-medium text-red-600"
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+              <span className="truncate">{saveError}</span>
+            </span>
+          ) : (
+            <span className="hidden text-muted xl:inline">All changes autosaved</span>
+          ))}
+        <div className="hidden md:block">
+          <DeviceSwitch value={device} onChange={setDevice} />
         </div>
-      </Topbar>
+        {locked ? null : publishBlocked ? <Tooltip label={blocker!}>{publishButton}</Tooltip> : publishButton}
+      </FormHeader>
 
-      <div className="grid w-full grid-cols-1 md:h-[calc(100dvh-3.5rem)] md:grid-cols-[264px_1fr_320px]">
-        {/* Left rail — Welcome · pages · End */}
-        <aside className="border-b border-line p-3 md:overflow-y-auto md:border-b-0 md:border-r">
-          <HoverHighlight>
-            <RailRow active={sel.kind === 'welcome'} onClick={() => setSel({ kind: 'welcome' })} icon="✦" label="Welcome" done={ready.welcome} />
+      {/* --rail and --panel are the two draggable columns (see PanelResizer).
+          They only feed the md+ template — below that the three columns stack
+          full width and neither handle is rendered. */}
+      {/* A closed form is read-only, but not dead: `inert` sits on the canvas
+          alone, so every editor inside it is out of the tab order and out of
+          reach of a pointer, while the rail stays live and you can still walk
+          through the screens and read them. Disabling the rail too (which is
+          what wrapping this whole grid did) made the form unreadable past
+          whichever screen happened to be selected.
+          The properties column goes entirely — every control in it edits, so
+          on a closed form it would be a panel of dead switches. */}
+      <div
+        className="relative grid w-full grid-cols-1 md:h-[calc(100dvh-3.5rem)] md:grid-cols-[var(--rail)_1fr] md:data-[panel=on]:grid-cols-[var(--rail)_1fr_var(--panel)]"
+        data-panel={locked ? 'off' : 'on'}
+        style={{ '--rail': `${rail.width}px`, '--panel': `${panel.width}px` } as React.CSSProperties}
+      >
+        <PanelResizer {...rail} />
+        {!locked && <PanelResizer {...panel} />}
+        {/* Left rail — Introduction · pages · End, in the order the voter meets
+            The pages you author group onto a soft panel between the two fixed
+            screens: they're the part that varies in length, so a shape around
+            them says "this is the list" better than the hairlines that used to
+            do the same job in three flat sections. Every row stacks from the top
+            — the panel is sized by its contents, and End screen follows straight
+            after it — and the panel only shrinks (scrolling inside) once the
+            pages outgrow the column. */}
+        <aside className="flex flex-col gap-2 border-b border-line p-2 md:h-full md:min-h-0 md:border-b-0 md:border-r">
+          <HoverHighlight className="flex min-h-0 flex-1 flex-col gap-2">
+            <RailRow active={activeScreen === 'welcome'} onClick={() => goToScreen('welcome')} icon="✦" label="Introduction" done={ready.welcome} />
 
-            <div className="my-2 border-t border-line pt-2">
-              <div className="space-y-0.5">
+            <div className="flex min-h-0 flex-col rounded-2xl bg-black/[0.05] p-1.5">
+              {/* The list is not `flex-1`: Add content belongs directly under the
+                  last page, not pushed to the foot of a half-empty panel. It
+                  still shrinks and scrolls once the pages outgrow the space,
+                  which is the only time Add content ends up at the bottom. */}
+              <div className="min-h-0 space-y-0.5 overflow-y-auto">
                 {pages.map((p, i) => (
                   <PageRow
                     key={p.id}
@@ -294,104 +622,160 @@ export default function BuilderPage() {
                     icon={PAGE_META[p.type].glyph}
                     label={p.title || PAGE_META[p.type].label}
                     done={pageReady(p, options, widgets)}
-                    onClick={() => setSel({ kind: 'page', id: p.id })}
+                    onClick={() => goToScreen(p.id)}
                     onDuplicate={() => duplicatePage(p.id)}
-                    onDelete={() => deletePage(p.id)}
+                    onDelete={() => requestDeletePage(p.id)}
+                    // The only page can be emptied but not removed.
+                    clearOnly={lastPage}
+                    deletable={!lastPage || pageHasContent(p, options, widgets)}
                     onReorder={reorderPages}
+                    // Closed: the row still selects its screen, but loses the
+                    // drag handle and the duplicate/delete pair.
+                    readOnly={locked}
                   />
                 ))}
-                {pages.length === 0 && <p className="px-2.5 py-1.5 text-[13px] text-muted">No pages yet</p>}
+                {pages.length === 0 && <p className="px-2 py-1 text-[12px] text-muted">No pages yet</p>}
               </div>
-              <AddPage onAdd={(t) => addPage(t)} />
+              {/* Nothing can be added to a closed form, so the CTA goes rather
+                  than sitting there greyed out. */}
+              {!locked && <AddPage onAdd={() => addPage('feedback')} />}
             </div>
 
-            <div className="mt-2 border-t border-line pt-2">
-              <RailRow active={sel.kind === 'end'} onClick={() => setSel({ kind: 'end' })} icon="✓" label="End screen" done={ready.thankyou} />
-            </div>
+            <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon="✓" label="End screen" done={ready.thankyou} />
           </HoverHighlight>
         </aside>
 
-        {/* Center canvas */}
-        <section className="flex flex-col items-center bg-black/[0.015] px-4 py-6 sm:px-10 md:overflow-y-auto">
-          <DeviceSwitch value={device} onChange={setDevice} />
-          <div className="mt-6 w-full transition-[max-width] duration-300 ease-out" style={{ maxWidth: DEVICE_MAX_WIDTH[device] }}>
-            <p className="mb-3 px-1 text-[13px] font-medium text-muted">{screenLabel}</p>
-            <div className="@container flex min-h-[520px] items-center rounded-[28px] border border-line bg-card px-[28px] pt-14 pb-8 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)]">
-              <div className="w-full">
-                {sel.kind === 'welcome' && <WelcomeCenter form={form} onChange={patchForm} onOpenHeroMedia={() => setHeroMedia(true)} />}
-                {currentPage && (
+        {/* Center canvas — the selected screen, and nothing else. The column
+            still scrolls when a single screen outgrows it (four options and an
+            input on one feedback page), but there is no scrolling *between*
+            screens: that's the rail's job. */}
+        {/* `inert` goes on the content, never on this column: an inert subtree
+            isn't hit-testable, so with it here a wheel over the canvas fell
+            through to the document and a card taller than the fold could not be
+            scrolled to. The scroll container stays live; everything drawn inside
+            it is what's out of reach. */}
+        <section className="bg-black/[0.015] px-4 py-6 sm:px-10 md:overflow-y-auto">
+          <div
+            // key: a fresh card per screen, so switching pages never carries a
+            // scroll offset or a focused field over from the last one.
+            key={screen.id}
+            inert={locked}
+            className={`mx-auto flex w-full flex-col transition-[max-width] duration-300 ease-out ${fillHeight ? 'md:h-full' : ''}`}
+            style={{ maxWidth: DEVICE_MAX_WIDTH[device] }}
+          >
+            <p className="mb-3 px-1 text-[13px] font-medium text-muted">{screen.label}</p>
+            <div
+              className={`@container flex min-h-[520px] items-center rounded-[28px] border border-line bg-card px-[28px] pt-14 pb-8 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] ${
+                screenFit ? 'md:min-h-0 md:items-stretch' : ''
+              } ${fillHeight ? 'md:flex-1' : ''} ${
+                // 1512×982 — the MacBook 14" logical resolution. Height follows
+                // the column's width, so the card keeps the ratio at any rail or
+                // panel width the creator drags to.
+                laptopAspect ? 'md:aspect-[1512/982] md:flex-none' : ''
+              }`}
+            >
+              <div className={`w-full ${screenFit ? 'md:h-full' : ''}`}>
+                {screen.id === 'welcome' && <WelcomeCenter form={form} onChange={patchForm} onOpenHeroMedia={() => setHeroMedia(true)} />}
+                {screen.page && (
                   <PageCenter
-                    page={currentPage}
+                    page={screen.page}
                     options={pageOptions}
                     widgets={pageWidgets}
                     selectedOptionKey={sel.kind === 'option' ? sel.key : null}
                     selectedInputKey={sel.kind === 'input' ? sel.key : null}
-                    onPageChange={(p) => patchPage(currentPage.id, p)}
+                    flashInputKey={flashWidget}
+                    onPageChange={(p) => patchPage(screen.page!.id, p)}
                     onSelectOption={(key) => setSel({ kind: 'option', key })}
                     onSelectInput={(key) => setSel({ kind: 'input', key })}
-                    onAddOption={() => addOption(currentPage.id)}
+                    onAddOption={() => addOption(screen.page!.id)}
                     onDeleteOption={removeOption}
                     onOpenMedia={openMedia}
-                    onAddInput={(t) => addInput(currentPage.id, t)}
+                    onAddInput={(t) => addInput(screen.page!.id, t)}
                     onDeleteInput={removeInput}
                     onFlashInputs={() => {
-                      setSel({ kind: 'page', id: currentPage.id })
+                      setSel({ kind: 'page', id: screen.page!.id })
                       setFlashInputs(true)
                     }}
                     patchOption={patchOption}
                     patchWidget={patchWidget}
                     optionFull={pageOptions.length >= MAX_OPTIONS}
+                    readOnly={locked}
                   />
                 )}
-                {sel.kind === 'end' && <EndScreenCenter form={form} onChange={patchForm} />}
+                {screen.id === 'end' && (
+                  <EndScreenCenter form={form} pages={pages} options={options} widgets={widgets} onChange={patchForm} />
+                )}
               </div>
             </div>
 
-            {/* Add the next content page from the canvas (not on the end screen). */}
-            {sel.kind !== 'end' && (
-              <div className="mt-4">
-                <AddPage
-                  variant="page"
-                  onAdd={(t) => addPage(t, sel.kind === 'welcome' ? -1 : currentPageIndex)}
-                />
-              </div>
+            {showIntroNudge && (
+              <CanvasNudge
+                title="Introduction page is ready"
+                body={
+                  firstVotePage
+                    ? 'Next, set up what people will be voting on.'
+                    : 'Next, add the page people will vote on.'
+                }
+                cta={firstVotePage ? 'Go to Get Vote' : 'Add Get Vote'}
+                onAct={() => (firstVotePage ? goToScreen(firstVotePage.id) : addPage('feedback'))}
+                onDismiss={() => setNudgeDismissed(true)}
+              />
             )}
           </div>
         </section>
 
-        {/* Right properties panel */}
+        {/* Right properties panel — omitted entirely on a closed form. */}
+        {!locked && (
         <aside className="border-t border-line md:overflow-y-auto md:border-l md:border-t-0">
           <p className="border-b border-line px-4 py-3.5 text-[13px] font-medium text-muted">Properties</p>
           {sel.kind === 'welcome' && <WelcomeProperties form={form} onChange={patchForm} />}
-          {sel.kind === 'page' && currentPage && (
-            <PageProperties
-              page={currentPage}
-              optionFull={pageOptions.length >= MAX_OPTIONS}
-              widgetsFull={pageWidgets.length >= MAX_WIDGETS}
-              flash={flashInputs}
-              onAddOption={() => addOption(currentPage.id)}
-              onAddInput={(t) => addInput(currentPage.id, t)}
-              onDeletePage={() => deletePage(currentPage.id)}
-              onFlashDone={clearFlashInputs}
-            />
-          )}
-          {sel.kind === 'option' && selectedOption && (
-            <OptionProperties
-              option={selectedOption}
-              onChange={(p) => patchOption(selectedOption.id, p)}
-              onDelete={() => removeOption(selectedOption.id)}
-              onOpenMedia={() => setMediaFor(selectedOption.id)}
-              allowDecorative={currentPage?.type === 'static'}
-            />
-          )}
-          {sel.kind === 'input' && selectedInput && (
-            <InputProperties widget={selectedInput} onChange={(p) => patchWidget(selectedInput.id, p)} onChangeType={(t) => changeWidgetType(selectedInput.id, t)} onDelete={() => removeInput(selectedInput.id)} />
+          {/* Whatever is selected on a page, the page's own properties stay on
+              screen: `currentPage` resolves an option or input back to the page
+              it lives on. The selection only decides what *else* is shown — its
+              input settings nested in the inputs list, or an option's below. */}
+          {currentPage && (
+            <>
+              <PageProperties
+                page={currentPage}
+                widgets={pageWidgets}
+                widgetsFull={pageWidgets.length >= MAX_WIDGETS}
+                selectedInputKey={sel.kind === 'input' ? sel.key : null}
+                onSelectInput={revealInput}
+                onChangeInputType={changeWidgetType}
+                inputSettings={
+                  selectedInput && (
+                    <InputProperties
+                      widget={selectedInput}
+                      onChange={(p) => patchWidget(selectedInput.id, p)}
+                      onDelete={() => removeInput(selectedInput.id)}
+                    />
+                  )
+                }
+                flash={flashInputs}
+                onChangeType={(t) => patchPage(currentPage.id, { type: t })}
+                onAddInput={(t) => addInput(currentPage.id, t)}
+                onDeletePage={() => requestDeletePage(currentPage.id)}
+                lastPage={lastPage}
+                canClear={canClearPage}
+                onFlashDone={clearFlashInputs}
+              />
+              {selectedOption && (
+                <OptionProperties
+                  option={selectedOption}
+                  heading={selectedOption.name || 'Selected media'}
+                  onChange={(p) => patchOption(selectedOption.id, p)}
+                  onDelete={() => removeOption(selectedOption.id)}
+                  onOpenMedia={() => setMediaFor(selectedOption.id)}
+                  allowDecorative={currentPage.type === 'static'}
+                />
+              )}
+            </>
           )}
           {sel.kind === 'end' && <EndProperties form={form} onChange={patchForm} />}
         </aside>
+        )}
       </div>
 
-      {previewOpen && <PreviewOverlay slug={form.slug} start={previewStart} onClose={() => setPreviewOpen(false)} />}
 
       {mediaOption && (
         <MediaModal
@@ -399,8 +783,6 @@ export default function BuilderPage() {
           embedUrl={mediaOption.embed_url}
           onChange={(p) => patchOption(mediaOption.id, p)}
           alt={mediaOption.is_decorative ? '' : mediaOption.alt_text || mediaOption.name}
-          focalX={mediaOption.focal_x}
-          focalY={mediaOption.focal_y}
           brightness={mediaOption.brightness}
           onClose={() => setMediaFor(null)}
         />
@@ -413,58 +795,45 @@ export default function BuilderPage() {
       {shareOpen && (
         <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} onChange={patchForm} onPublish={publish} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
       )}
+
+      {pageAction && (
+        <ConfirmDialog
+          title={actionTitle}
+          body={actionSummary}
+          confirmLabel={pageAction.kind === 'clear' ? 'Clear page' : 'Delete page'}
+          onCancel={() => setPageAction(null)}
+          onConfirm={() => {
+            if (pageAction.kind === 'clear') clearPage(pageAction.id)
+            else deletePage(pageAction.id)
+            setPageAction(null)
+          }}
+        />
+      )}
     </>
   )
 }
 
 /* -------------------------------- topbar --------------------------------- */
 
-function Topbar({ children }: { children: React.ReactNode }) {
-  return (
-    <header className="sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur">
-      <div className="flex h-14 w-full items-center justify-between px-[14px]">{children}</div>
-    </header>
-  )
-}
-
-function Breadcrumb({ title, onRename }: { title?: string | null; onRename?: (v: string) => void }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 text-[14px]">
-      <Link href="/creator" className="grid h-6 w-6 flex-none place-items-center rounded-lg bg-ink text-[13px] font-bold text-white" aria-label="Prism home">
-        P
-      </Link>
-      <Link href="/creator" className="flex-none font-medium text-muted transition hover:text-ink">
-        Forms
-      </Link>
-      {title !== undefined && (
-        <>
-          <span className="flex-none text-muted">›</span>
-          {onRename ? (
-            <input
-              value={title ?? ''}
-              onChange={(e) => onRename(e.target.value)}
-              placeholder="Untitled form"
-              aria-label="Form name"
-              size={Math.max((title || 'Untitled form').length, 6)}
-              className="min-w-0 max-w-[46vw] truncate rounded-md bg-transparent px-1.5 py-0.5 font-medium outline-none transition placeholder:text-muted hover:bg-black/[0.04] focus:bg-black/[0.05] focus:ring-2 focus:ring-black/[0.06]"
-            />
-          ) : (
-            <span className="min-w-0 truncate font-medium">{title || 'Untitled form'}</span>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
 /* --------------------------------- rail ---------------------------------- */
+
+/**
+ * The row's icon tile doubles as its readiness indicator: it takes the status
+ * "open" tint once a screen has everything it needs, and stays neutral until
+ * then. This replaces the trailing green/grey dot — same information, without
+ * spending a column of an already narrow rail on it.
+ */
+function tileClass(done?: boolean): string {
+  return `grid h-5 w-5 flex-none place-items-center rounded-md text-[11px] font-bold transition-colors ${
+    done ? 'bg-open-bg text-open' : 'bg-black/[0.06]'
+  }`
+}
 
 function RailRow({ active, onClick, icon, label, done }: { active: boolean; onClick: () => void; icon: string; label: string; done?: boolean }) {
   return (
-    <button type="button" onClick={onClick} data-hl className={`relative flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${active ? 'bg-black/[0.06]' : ''}`}>
-      <span className="grid h-6 w-6 flex-none place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">{icon}</span>
-      <span className="min-w-0 flex-1 truncate text-[14px] font-medium">{label}</span>
-      {done !== undefined && <span className={`h-1.5 w-1.5 flex-none rounded-full ${done ? 'bg-open' : 'bg-line-strong'}`} />}
+    <button type="button" onClick={onClick} data-hl className={`relative flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition ${active ? 'bg-black/[0.06]' : ''}`}>
+      <span className={tileClass(done)}>{icon}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
     </button>
   )
 }
@@ -478,7 +847,10 @@ function PageRow({
   onClick,
   onDuplicate,
   onDelete,
+  clearOnly = false,
+  deletable = true,
   onReorder,
+  readOnly = false,
 }: {
   index: number
   active: boolean
@@ -488,126 +860,105 @@ function PageRow({
   onClick: () => void
   onDuplicate: () => void
   onDelete: () => void
+  /** Last page standing: the action empties it instead of removing it. */
+  clearOnly?: boolean
+  /** False when the action would do nothing — an already-empty last page. */
+  deletable?: boolean
   onReorder: (from: number, to: number) => void
+  /** Closed form: the row still selects its screen, but can't reorder, duplicate
+   *  or delete. Rendered as absent rather than disabled — a row of dead icons on
+   *  every page is noise on a form that is only there to be read. */
+  readOnly?: boolean
 }) {
   return (
     <div
       data-hl
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault()
-        const from = Number(e.dataTransfer.getData('text/plain'))
-        if (!Number.isNaN(from) && from !== index) onReorder(from, index)
-      }}
-      className={`group relative flex items-center gap-1 rounded-xl px-1 py-1.5 transition ${active ? 'bg-black/[0.06]' : ''}`}
+      onDragOver={readOnly ? undefined : (e) => e.preventDefault()}
+      onDrop={
+        readOnly
+          ? undefined
+          : (e) => {
+              e.preventDefault()
+              const from = Number(e.dataTransfer.getData('text/plain'))
+              if (!Number.isNaN(from) && from !== index) onReorder(from, index)
+            }
+      }
+      // Selected reads as a card lifted off the panel rather than a darker patch
+      // of it: another wash of black over the grey barely separates from the
+      // hover highlight sliding around on the same surface.
+      className={`group relative flex items-center gap-0.5 rounded-xl px-0.5 py-1 transition ${
+        active ? 'bg-card shadow-[0_1px_2px_rgba(0,0,0,0.06)]' : ''
+      }`}
     >
-      <span
-        draggable
-        onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
-        aria-label="Drag to reorder"
-        className="flex-none cursor-grab px-1 text-muted opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
-      >
-        ⠿
-      </span>
-      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
-        <span className="grid h-6 w-6 flex-none place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">{icon}</span>
-        <span className="min-w-0 flex-1 truncate text-[14px] font-medium">{label}</span>
-        <span className={`h-1.5 w-1.5 flex-none rounded-full ${done ? 'bg-open' : 'bg-line-strong'}`} />
+      {readOnly ? (
+        // Keeps the title aligned with the editable rows above and below it.
+        <span className="flex-none px-1 text-[12px] text-transparent" aria-hidden="true">
+          ⠿
+        </span>
+      ) : (
+        <span
+          draggable
+          onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
+          aria-label="Drag to reorder"
+          className="flex-none cursor-grab px-1 text-[12px] text-muted opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
+        >
+          ⠿
+        </span>
+      )}
+      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <span className={tileClass(done)}>{icon}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
       </button>
-      <div className="flex flex-none items-center gap-0.5 opacity-0 transition group-hover:opacity-100">
+      {/* Hidden until hover, so the row's width is spent on the title. */}
+      {!readOnly && (
+      <div className="flex flex-none items-center opacity-0 transition group-hover:opacity-100">
         <Tooltip label="Duplicate">
-          <button type="button" onClick={onDuplicate} aria-label="Duplicate" className="grid h-6 w-6 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-ink">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.7" /><path d="M4 16V6a2 2 0 0 1 2-2h10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+          <button type="button" onClick={onDuplicate} aria-label="Duplicate" className="grid h-5 w-5 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-ink">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.7" /><path d="M4 16V6a2 2 0 0 1 2-2h10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
           </button>
         </Tooltip>
-        <Tooltip label="Delete">
-          <button type="button" onClick={onDelete} aria-label="Delete" className="grid h-6 w-6 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-red-600">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        {/* Same slot, different job on the last page: a reset arrow rather than a
+            bin, so the icon doesn't promise a delete the form can't allow. */}
+        <Tooltip label={clearOnly ? 'Clear page' : 'Delete'}>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={!deletable}
+            aria-label={clearOnly ? 'Clear page' : 'Delete'}
+            className="grid h-5 w-5 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-red-600 disabled:pointer-events-none disabled:opacity-30"
+          >
+            {clearOnly ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            )}
           </button>
         </Tooltip>
       </div>
+      )}
     </div>
   )
 }
 
 /* ----------------------------- add content ------------------------------- */
 
-function AddPage({ onAdd, variant = 'rail' }: { onAdd: (type: PageType) => void; variant?: 'rail' | 'page' }) {
-  const [open, setOpen] = useState(false)
-  const [rect, setRect] = useState<DOMRect | null>(null)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  const page = variant === 'page'
-  const items: { type: PageType; label: string; hint: string; glyph: string }[] = [
-    { type: 'feedback', label: 'Get feedback', hint: 'Compare options and collect feedback', glyph: PAGE_META.feedback.glyph },
-    { type: 'static', label: 'Add more context', hint: 'No feedback required', glyph: PAGE_META.static.glyph },
-  ]
-
-  function toggle() {
-    if (!open && btnRef.current) setRect(btnRef.current.getBoundingClientRect())
-    setOpen((o) => !o)
-  }
-
-  // Fixed positioning so the menu escapes the scrolling column and floats above
-  // everything (not clipped by the rail's overflow). Its width hugs its content,
-  // so we center it on the trigger by measuring the mounted node.
-  const top = rect ? rect.bottom + 6 : 0
-  const positionMenu = useCallback((node: HTMLDivElement | null) => {
-    const r = btnRef.current?.getBoundingClientRect()
-    if (!node || !r) return
-    const w = node.offsetWidth
-    const h = node.offsetHeight
-    const centered = r.left + r.width / 2 - w / 2
-    node.style.left = `${Math.min(Math.max(8, centered), window.innerWidth - w - 8)}px`
-    // Flip above the trigger when the menu would overflow the viewport bottom and
-    // there's more room above — otherwise it's clipped with no way to scroll to it.
-    const spaceBelow = window.innerHeight - r.bottom
-    const openAbove = spaceBelow < h + 12 && r.top > spaceBelow
-    node.style.top = openAbove ? `${Math.max(8, r.top - h - 6)}px` : `${r.bottom + 6}px`
-    node.style.transformOrigin = openAbove ? 'bottom' : 'top'
-  }, [])
-
+/**
+ * Adds a page. It used to open a menu asking for feedback-vs-static up front;
+ * that choice is now a property of the selected page, edited in the right-hand
+ * panel, so adding is a single click and the type is changed after the fact.
+ */
+/** Rail-only: the canvas is a continuous scroll of the form as the voter meets
+ *  it, so it carries no insert slots of its own. */
+function AddPage({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className={page ? '' : 'mt-1.5'}>
+    <div className="mt-1">
       <button
-        ref={btnRef}
         type="button"
-        onClick={toggle}
-        className={
-          page
-            ? 'flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-line-strong py-4 text-[14px] font-medium text-muted transition hover:border-ink hover:bg-black/[0.02] hover:text-ink'
-            : 'flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-line-strong py-2 text-[14px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink'
-        }
+        onClick={onAdd}
+        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-line-strong py-1.5 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink"
       >
         <span className="text-base leading-none">+</span> Add content
       </button>
-      {open && rect && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            ref={positionMenu}
-            className="u-popover fixed left-0 z-50 w-max max-w-[360px] origin-top overflow-hidden rounded-2xl border border-line bg-card p-1.5 shadow-[0_8px_30px_-8px_rgba(0,0,0,0.25),0_2px_8px_-2px_rgba(0,0,0,0.12)]"
-            style={{ top }}
-          >
-            {items.map((it) => (
-              <button
-                key={it.type}
-                type="button"
-                onClick={() => {
-                  onAdd(it.type)
-                  setOpen(false)
-                }}
-                className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-black/[0.04]"
-              >
-                <span className="grid h-7 w-7 flex-none place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">{it.glyph}</span>
-                <span>
-                  <span className="block whitespace-nowrap text-[14px] font-medium">{it.label}</span>
-                  <span className="block whitespace-nowrap text-[13px] text-muted">{it.hint}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
     </div>
   )
 }

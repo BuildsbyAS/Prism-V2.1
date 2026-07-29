@@ -4,12 +4,14 @@ import { useState } from 'react'
 import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
 import { MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
-import { imageAdjustStyle } from '@/lib/image'
+import { brightnessStyle } from '@/lib/image'
 import HeroPanel from '@/components/HeroPanel'
 import WidgetInput from '@/components/WidgetInput'
 import Tooltip from '@/components/Tooltip'
+import MediaLightbox, { optionMedia } from '@/components/MediaLightbox'
 import { InlineInput, InlineTextArea } from './Inline'
 import ImageUpload from './ImageUpload'
+import { MediaIconBtn, EditGlyph, DeleteGlyph, ExpandGlyph } from './controls'
 
 /* ------------------------------- Welcome --------------------------------- */
 
@@ -19,18 +21,38 @@ export function WelcomeCenter({ form, onChange, onOpenHeroMedia }: { form: Form;
     // padding so the backdrop runs edge to edge, exactly as the voter sees it.
     // Two columns on desktop only — @4xl (896px) sits above the 768px tablet
     // canvas, so tablet and mobile both stack.
-    <div className="-mx-[28px] -mb-8 -mt-14 grid w-[calc(100%+56px)] overflow-hidden rounded-[28px] @4xl:h-dvh @4xl:grid-cols-2 @4xl:items-stretch">
+    //
+    // Height: on md+ the canvas card is given a fixed height (see `fitCanvas` in
+    // the edit page) so the preview can never grow past the column. `h-full`
+    // would only cover the card's *content* box, so the +5.5rem adds back the
+    // pt-14/pb-8 the negative margins cancel — the vertical twin of the
+    // w-[calc(100%+56px)] trick above. The hero media object-contains inside the
+    // panel, so a tall upload scales down instead of pushing the card off-screen.
+    // Rows: stacked, the hero takes whatever height the copy leaves (minmax(0,1fr)
+    // lets it shrink); in two columns there is a single full-height row.
+    <div className="-mx-[28px] -mb-8 -mt-14 grid w-[calc(100%+56px)] overflow-hidden rounded-[28px] md:h-[calc(100%+5.5rem)] md:grid-rows-[auto_minmax(0,1fr)] @4xl:grid-cols-2 @4xl:grid-rows-[minmax(0,1fr)] @4xl:items-stretch">
       <div className="flex flex-col justify-center gap-2 overflow-y-auto px-[28px] py-14 @4xl:py-20">
-        <InlineTextArea value={form.title} onChange={(v) => onChange({ title: v })} placeholder="What are we testing?" className="px-2 py-1 text-3xl font-semibold leading-tight tracking-tight sm:text-[34px]" />
+        {/* font-pixel: these editors stand in for the voter's <h1>/<h2>, which the
+            global heading rule renders in the pixel face — a textarea isn't a
+            heading, so it has to opt in explicitly or the preview would lie. */}
+        <InlineTextArea value={form.title} onChange={(v) => onChange({ title: v })} placeholder="What are we testing?" className="px-2 py-1 font-pixel text-3xl font-semibold leading-tight tracking-tight sm:text-[34px]" />
         <InlineTextArea value={form.body_copy} onChange={(v) => onChange({ body_copy: v })} placeholder="Add the context voters read before they start…" className="px-2 py-1 text-[15px] leading-relaxed text-muted" />
       </div>
       {form.hero_image_url ? (
-        <HeroPanel bg={form.hero_bg} className="h-[60vh] @4xl:h-full">
+        <HeroPanel bg={form.hero_bg} dither={form.hero_dither} className="h-[60vh] md:h-full">
           <ImageUpload value={form.hero_image_url} onChange={(v) => onChange({ hero_image_url: v })} onClickUpload={onOpenHeroMedia} bare />
         </HeroPanel>
       ) : (
-        <div className="px-[28px] pb-10 @4xl:flex @4xl:items-center @4xl:py-14 @4xl:pl-0">
-          <ImageUpload value="" onChange={(v) => onChange({ hero_image_url: v })} onClickUpload={onOpenHeroMedia} />
+        /* In two columns the dropzone owns the whole right cell. This was a flex
+           row with items-center, which sized the zone to its *content* — a narrow
+           box floating in the middle of the column. A plain block with h-full
+           lets ImageUpload's own h-full/w-full fill the cell instead. */
+        /* No `onClickUpload`: with nothing here yet the only thing the modal
+           could offer is a file picker, so the empty zone opens the OS one
+           directly and saves a click. The modal is still what Edit opens once
+           there's an image — that's where replacing and the backdrop live. */
+        <div className="px-[28px] pb-10 @4xl:h-full @4xl:py-14 @4xl:pl-0">
+          <ImageUpload value="" onChange={(v) => onChange({ hero_image_url: v })} />
         </div>
       )}
     </div>
@@ -45,6 +67,7 @@ export function PageCenter({
   widgets,
   selectedOptionKey,
   selectedInputKey,
+  flashInputKey,
   onPageChange,
   onSelectOption,
   onSelectInput,
@@ -57,12 +80,15 @@ export function PageCenter({
   patchOption,
   patchWidget,
   optionFull,
+  readOnly = false,
 }: {
   page: Page
   options: Option[]
   widgets: Widget[]
   selectedOptionKey: string | null
   selectedInputKey: string | null
+  /** The input the canvas just scrolled to — pulses it once on arrival. */
+  flashInputKey: string | null
   onPageChange: (p: Partial<Page>) => void
   onSelectOption: (key: string) => void
   onSelectInput: (key: string) => void
@@ -75,17 +101,25 @@ export function PageCenter({
   patchOption: (key: string, p: Partial<Option>) => void
   patchWidget: (key: string, p: Partial<Widget>) => void
   optionFull: boolean
+  /** Closed form: the canvas is a record, so nothing that adds to it is drawn.
+   *  The whole canvas is inert anyway — these would be unreachable prompts to do
+   *  something the form can't do. */
+  readOnly?: boolean
 }) {
   const feedback = page.type === 'feedback'
+  // One viewer for the whole page rather than one per card: only one can be open
+  // at a time, and the option it holds is all that differs.
+  const [zoom, setZoom] = useState<Option | null>(null)
   return (
     <div className="space-y-8">
+      {zoom && <MediaLightbox media={optionMedia(zoom)} onClose={() => setZoom(null)} />}
       {/* Page heading */}
       <div className="flex flex-col">
         <InlineTextArea
           value={page.title}
           onChange={(v) => onPageChange({ title: v })}
           placeholder={feedback ? 'What are we comparing?' : 'Section title'}
-          className="px-0 py-1 text-2xl font-semibold tracking-tight"
+          className="px-0 py-1 font-pixel text-2xl font-semibold tracking-tight"
         />
         <InlineTextArea
           value={page.body}
@@ -106,14 +140,16 @@ export function PageCenter({
               key={o.id}
               option={o}
               letter={String.fromCharCode(65 + i)}
+              feedback={feedback}
               selected={selectedOptionKey === o.id}
               onSelect={() => onSelectOption(o.id)}
               onChange={(p) => patchOption(o.id, p)}
               onDelete={() => onDeleteOption(o.id)}
               onOpenMedia={() => onOpenMedia(o.id)}
+              onZoom={setZoom}
             />
           ))}
-          {!optionFull && (
+          {!optionFull && !readOnly && (
             <button
               type="button"
               onClick={onAddOption}
@@ -135,12 +171,13 @@ export function PageCenter({
                 key={w.id}
                 widget={w}
                 selected={selectedInputKey === w.id}
+                flash={flashInputKey === w.id}
                 onSelect={() => onSelectInput(w.id)}
                 onChange={(p) => patchWidget(w.id, p)}
                 onDelete={() => onDeleteInput(w.id)}
               />
             ))}
-            {widgets.length < MAX_WIDGETS && <WidgetSlot onAddInput={onAddInput} onClick={onFlashInputs} />}
+            {widgets.length < MAX_WIDGETS && !readOnly && <WidgetSlot onAddInput={onAddInput} onClick={onFlashInputs} />}
           </div>
         </section>
       )}
@@ -151,59 +188,103 @@ export function PageCenter({
 function OptionCard({
   option,
   letter,
+  feedback,
   selected,
   onSelect,
   onChange,
   onDelete,
   onOpenMedia,
+  onZoom,
 }: {
   option: Option
   letter: string
+  /** Feedback pages compare named options; static pages just show the media. */
+  feedback: boolean
   selected: boolean
   onSelect: () => void
   onChange: (p: Partial<Option>) => void
   onDelete: () => void
   onOpenMedia: () => void
+  onZoom: (option: Option) => void
 }) {
   return (
     <div
       onClick={onSelect}
       className={`group flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card transition ${selected ? 'border-ink' : 'border-line hover:border-line-strong'}`}
     >
-      <div className="flex items-start gap-2 border-b border-line px-4 py-2.5">
-        <span className="mt-1 grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">{letter}</span>
-        <div className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
-          <InlineInput value={option.name} onChange={(v) => onChange({ name: v })} placeholder="Option name" className="px-1.5 py-0.5 text-[15px] font-semibold tracking-tight" />
-          <InlineInput value={option.description} onChange={(v) => onChange({ description: v })} placeholder="One line on what's different" className="px-1.5 py-0.5 text-[13px] leading-relaxed text-muted" />
+      {/* Static media is context, not a choice — there's nothing to label or tell
+          apart, so the A/B letter and the name/description editors are dropped
+          and the card is only the media, matching what the voter sees. Delete
+          moves onto the media, since the header that held it is gone. */}
+      {feedback && (
+        <div className="flex items-start gap-2 border-b border-line px-4 py-2.5">
+          <span className="mt-1 grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">{letter}</span>
+          <div className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+            <InlineInput value={option.name} onChange={(v) => onChange({ name: v })} placeholder="Option name" className="px-1.5 py-0.5 text-[15px] font-semibold tracking-tight" />
+            <InlineInput value={option.description} onChange={(v) => onChange({ description: v })} placeholder="One line on what's different" className="px-1.5 py-0.5 text-[13px] leading-relaxed text-muted" />
+          </div>
+          <Tooltip label="Delete" className="mt-0.5 flex-none opacity-0 transition group-hover:opacity-100">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete()
+              }}
+              aria-label="Delete option"
+              className="text-muted transition hover:text-red-600"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          </Tooltip>
         </div>
-        <Tooltip label="Delete" className="mt-0.5 flex-none opacity-0 transition group-hover:opacity-100">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete()
-            }}
-            aria-label="Delete option"
-            className="text-muted transition hover:text-red-600"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
-        </Tooltip>
-      </div>
-      <div className="group/media relative w-full">
+      )}
+      {/* flex-1: media now keeps its own aspect ratio, so two cards in a row can
+          want different heights. The grid stretches both to the taller one and
+          this takes the slack, keeping the shorter media centred instead of
+          leaving a gap under it. */}
+      <div className="group/media relative flex w-full flex-1">
         <MediaThumb option={option} />
+        {!feedback && (
+          <div className="absolute right-2 top-2 z-10 opacity-0 transition group-hover:opacity-100">
+            <Tooltip label="Delete">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete()
+                }}
+                aria-label="Delete media"
+                className="grid h-8 w-8 place-items-center rounded-lg bg-white/90 text-muted shadow-sm transition hover:text-red-600"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </Tooltip>
+          </div>
+        )}
         {option.embed_url ? (
           <div className="absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 transition group-hover/media:opacity-100">
             <div className="flex items-center gap-1.5">
-              <MediaIconBtn tip="Change" onClick={onOpenMedia}>
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="13" height="11" rx="2" stroke="currentColor" strokeWidth="1.7" /><path d="M8 4h11a2 2 0 0 1 2 2v9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><circle cx="7" cy="11" r="1.4" fill="currentColor" /><path d="m3 16 3.5-3 3 2.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              {/* Expand leads: the card is a thumbnail in a grid, so "let me
+                  actually look at this" is the most common thing to want of it.
+                  The scrim above the media takes every click, which is why this
+                  is a button here rather than a click on the image. */}
+              <MediaIconBtn tip="Expand" onClick={() => onZoom(option)}>
+                {ExpandGlyph}
               </MediaIconBtn>
+              {/* Edit and delete are the rest of the vocabulary — swapping the
+                  media is one click deeper, in the properties rail that Edit
+                  opens, rather than another button competing for the same spot. */}
               <MediaIconBtn tip="Edit" onClick={onSelect}>
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8h9M17 8h3M4 16h3M11 16h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><circle cx="15" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.7" /><circle cx="9" cy="16" r="2.2" stroke="currentColor" strokeWidth="1.7" /></svg>
+                {EditGlyph}
               </MediaIconBtn>
-              <MediaIconBtn tip="Delete" onClick={() => onChange({ embed_url: '' })}>
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              </MediaIconBtn>
+              {/* Clearing the URL leaves an empty, still-named option — which is
+                  meaningful on a feedback page but is just an orphan card on a
+                  static one, where the corner button removes the whole thing. */}
+              {feedback && (
+                <MediaIconBtn tip="Delete" onClick={() => onChange({ embed_url: '' })}>
+                  {DeleteGlyph}
+                </MediaIconBtn>
+              )}
             </div>
           </div>
         ) : (
@@ -222,45 +303,31 @@ function OptionCard({
   )
 }
 
-function MediaIconBtn({ tip, onClick, children }: { tip: string; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <div className="group/btn relative">
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation()
-          onClick()
-        }}
-        aria-label={tip}
-        className="grid h-9 w-9 place-items-center rounded-xl bg-ink/85 text-white transition hover:bg-ink"
-      >
-        {children}
-      </button>
-      <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-ink px-2 py-1 text-[13px] font-medium text-white opacity-0 transition group-hover/btn:opacity-100">
-        {tip}
-      </span>
-    </div>
-  )
-}
 
 function MediaThumb({ option }: { option: Option }) {
   if (!option.embed_url) {
-    return <div className="flex h-44 items-center justify-center bg-black/[0.015] text-[13px] text-muted">Upload media</div>
+    return <div className="flex min-h-44 w-full items-center justify-center bg-black/[0.015] text-[13px] text-muted">Upload media</div>
   }
   if (option.embed_type === 'image') {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={option.embed_url}
-        alt={option.is_decorative ? '' : option.alt_text || option.name}
-        style={imageAdjustStyle(option.focal_x, option.focal_y, option.brightness)}
-        className="h-44 w-full object-cover"
-      />
+      // Contained, not cropped — the card is where the creator checks their
+      // upload, so it has to show the same full image the voter gets. The box
+      // keeps a floor so short media doesn't collapse the card and a ceiling so
+      // a tall screenshot doesn't push the rest of the page out of view.
+      <div className="flex min-h-44 w-full items-center justify-center bg-black/[0.015] p-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={option.embed_url}
+          alt={option.is_decorative ? '' : option.alt_text || option.name}
+          style={brightnessStyle(option.brightness)}
+          className="max-h-[320px] max-w-full rounded-lg"
+        />
+      </div>
     )
   }
   const host = hostnameOf(option.embed_url)
   return (
-    <div className="flex h-44 flex-col items-center justify-center gap-1 bg-black/[0.015] text-center">
+    <div className="flex min-h-44 w-full flex-col items-center justify-center gap-1 bg-black/[0.015] text-center">
       <span className="text-[14px] font-medium">{EMBED_TYPE_LABEL[option.embed_type]}</span>
       {host && <span className="max-w-[80%] truncate text-[13px] text-muted">{host}</span>}
       <span className="mt-1 text-[13px] text-muted">Live in Preview</span>
@@ -271,12 +338,15 @@ function MediaThumb({ option }: { option: Option }) {
 function InputCard({
   widget,
   selected,
+  flash = false,
   onSelect,
   onChange,
   onDelete,
 }: {
   widget: Widget
   selected: boolean
+  /** Pulses the card — set when the canvas had to scroll to bring it into view. */
+  flash?: boolean
   onSelect: () => void
   onChange: (p: Partial<Widget>) => void
   onDelete: () => void
@@ -285,7 +355,14 @@ function InputCard({
   const showTitle = c.showTitle !== false
   const setConfig = (patch: Partial<typeof c>) => onChange({ config: { ...c, ...patch } })
   return (
-    <div onClick={onSelect} className={`group relative cursor-pointer rounded-2xl border p-4 transition ${selected ? 'border-ink' : 'border-line hover:border-line-strong'}`}>
+    // data-widget is how the builder finds this card to scroll to it.
+    <div
+      data-widget={widget.id}
+      onClick={onSelect}
+      className={`group relative cursor-pointer rounded-2xl border p-4 transition ${
+        selected ? 'border-ink' : 'border-line hover:border-line-strong'
+      } ${flash ? 'u-flash' : ''}`}
+    >
       {/* Delete — a black cross sitting centered on the card's top edge. */}
       <button
         type="button"

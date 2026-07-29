@@ -1,13 +1,48 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase, isSupabaseConfigured, isAllowedEmail, ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
 
 type Mode = 'signin' | 'signup'
 
+/**
+ * Where to go after signing in. `next` comes from the URL, so it's attacker-
+ * controllable: only same-site paths are honoured. `//evil.com` is a
+ * protocol-relative URL that browsers treat as another origin, hence the second
+ * check — a lone `startsWith('/')` would wave it through.
+ */
+function safeNext(next: string | null): string {
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/creator'
+  return next
+}
+
+/**
+ * `useSearchParams` opts the tree below it out of prerendering, so the form sits
+ * behind a Suspense boundary — without one the whole route fails to prerender at
+ * build time.
+ */
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginForm />
+    </Suspense>
+  )
+}
+
+/** Matches the real page's frame, so the swap on hydration isn't a jump. */
+function LoginFallback() {
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-[420px] flex-col justify-center px-5 py-10">
+      <p className="text-[14px] font-medium text-muted">Prism</p>
+      <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[28px]">Sign in</h1>
+    </main>
+  )
+}
+
+function LoginForm() {
   const router = useRouter()
+  const next = safeNext(useSearchParams().get('next'))
   const [mode, setMode] = useState<Mode>('signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -27,7 +62,9 @@ export default function LoginPage() {
         const { error } = await supabase.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+          },
         })
         if (error) return setError(error.message)
         setError('Check your inbox to confirm your email, then sign in.')
@@ -35,7 +72,7 @@ export default function LoginPage() {
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) return setError(error.message)
-        router.push('/creator')
+        router.push(next)
       }
     } finally {
       setBusy(false)

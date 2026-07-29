@@ -15,8 +15,16 @@ const ITEMS: { key: Device; label: string; icon: React.ReactNode }[] = [
   { key: 'mobile', label: 'Mobile', icon: <PhoneIcon /> },
 ]
 
-/** Device preview switch — a single white pill physically slides to the active
- *  segment (Luma-style), instead of each segment toggling its own background. */
+/**
+ * Device preview switch — a single white pill physically slides to the active
+ * segment (Luma-style), instead of each segment toggling its own background.
+ *
+ * Icons only. Labelled, it was the widest thing in the header and read as three
+ * more destinations next to the view tabs; the three device glyphs are already
+ * unambiguous, and the name is a hover away. `h-7` matches the tab switch it
+ * sits beside — two segmented controls on one bar have to be the same height or
+ * the bar looks broken.
+ */
 export default function DeviceSwitch({ value, onChange }: { value: Device; onChange: (d: Device) => void }) {
   const index = ITEMS.findIndex((i) => i.key === value)
   return (
@@ -39,12 +47,13 @@ export default function DeviceSwitch({ value, onChange }: { value: Device; onCha
             type="button"
             onClick={() => onChange(it.key)}
             aria-pressed={active}
-            className={`relative z-10 flex items-center justify-center gap-1.5 rounded-[10px] px-3 py-1.5 text-[13px] font-medium transition-colors ${
+            aria-label={it.label}
+            title={it.label}
+            className={`relative z-10 flex h-7 w-10 items-center justify-center rounded-[10px] transition-colors ${
               active ? 'text-ink' : 'text-muted hover:text-ink'
             }`}
           >
             {it.icon}
-            <span className="hidden sm:inline">{it.label}</span>
           </button>
         )
       })}

@@ -3,10 +3,28 @@
 // Small form controls shared between the center editors and the right-hand
 // properties panel.
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+export function Field({
+  label,
+  hint,
+  /**
+   * Quieter label — 13px muted rather than 14px ink. For a dialog that is
+   * nothing but fields, where a column of bold labels competes with the values
+   * you're there to read; the properties rail keeps the louder default, since
+   * its labels sit among headings and copy.
+   */
+  subtle = false,
+  children,
+}: {
+  label: string
+  hint?: string
+  subtle?: boolean
+  children: React.ReactNode
+}) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-[14px] font-medium">{label}</span>
+      <span className={`mb-1.5 block ${subtle ? 'text-[13px] font-medium text-muted' : 'text-[14px] font-medium'}`}>
+        {label}
+      </span>
       {children}
       {hint && <span className="mt-1 block text-[13px] leading-relaxed text-muted">{hint}</span>}
     </label>
@@ -65,6 +83,75 @@ export function Toggle({
     </button>
   )
 }
+
+/**
+ * The hover control on a piece of media — used by option cards and the welcome
+ * hero, so both read as the same object. Edit and delete are the whole
+ * vocabulary; swapping the media is one click deeper, inside what Edit opens.
+ * Lives here rather than in panes.tsx because ImageUpload needs it too and
+ * panes.tsx already imports ImageUpload.
+ */
+export function MediaIconBtn({
+  tip,
+  onClick,
+  children,
+}: {
+  tip: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="group/btn relative">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onClick()
+        }}
+        aria-label={tip}
+        className="grid h-9 w-9 place-items-center rounded-xl bg-ink/85 text-white transition hover:bg-ink"
+      >
+        {children}
+      </button>
+      <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-ink px-2 py-1 text-[13px] font-medium text-white opacity-0 transition group-hover/btn:opacity-100">
+        {tip}
+      </span>
+    </div>
+  )
+}
+
+export const EditGlyph = (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M4 8h9M17 8h3M4 16h3M11 16h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    <circle cx="15" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.7" />
+    <circle cx="9" cy="16" r="2.2" stroke="currentColor" strokeWidth="1.7" />
+  </svg>
+)
+
+export const DeleteGlyph = (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path
+      d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+/** Four corners pushing out — "give this the whole window". */
+export const ExpandGlyph = (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path
+      d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
 
 export function Segmented<T extends string | number>({
   options,

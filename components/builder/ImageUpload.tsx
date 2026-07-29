@@ -2,6 +2,8 @@
 
 import { useRef, useState } from 'react'
 import { uploadAsset } from '@/lib/assets'
+import MediaLightbox from '@/components/MediaLightbox'
+import { MediaIconBtn, EditGlyph, DeleteGlyph, ExpandGlyph } from './controls'
 
 /**
  * Hero image/gif upload. Persists via uploadAsset — Supabase Storage URL when
@@ -25,6 +27,7 @@ export default function ImageUpload({
   const inputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [zoom, setZoom] = useState(false)
   const openUpload = onClickUpload ?? (() => inputRef.current?.click())
 
   async function pick(file: File | undefined) {
@@ -33,8 +36,10 @@ export default function ImageUpload({
       setError('Please choose an image or GIF.')
       return
     }
-    if (file.size > 5 * 1024 * 1024) {
-      setError('Keep it under 5 MB.')
+    // Same ceiling MediaModal enforces — the two are alternate doors onto one
+    // upload, so a file the modal would take can't bounce off the drop zone.
+    if (file.size > 15 * 1024 * 1024) {
+      setError('Keep it under 15 MB.')
       return
     }
     setError(null)
@@ -53,31 +58,47 @@ export default function ImageUpload({
       <div
         className={
           bare
-            ? 'group relative flex max-h-full max-w-full'
+            ? 'group relative z-10 flex h-full w-full items-center justify-center'
             : 'group relative w-full overflow-hidden rounded-2xl border border-line @3xl:h-full @3xl:min-h-[440px]'
         }
       >
-        {/* Bare (on a HeroPanel): fit inside the panel box, aspect ratio intact.
+        {/* Bare (on a HeroPanel): fill the panel's padded box so the image's
+            max-h/max-w percentages have a definite box to resolve against, then
+            fit inside it with the aspect ratio intact.
             Framed: full width stacked, cropped to focal in the desktop column. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={value} alt="Hero" className={bare ? 'block max-h-full max-w-full object-contain' : 'w-full @3xl:h-full @3xl:object-cover'} />
-        <div className="absolute inset-x-0 bottom-0 flex gap-2 bg-gradient-to-t from-black/40 to-transparent p-3 opacity-0 transition group-hover:opacity-100">
-          <button
-            type="button"
-            onClick={openUpload}
-            className="rounded-[16px] bg-white/90 px-3 py-1.5 text-[14px] font-medium text-ink"
-          >
-            Replace
-          </button>
-          <button
-            type="button"
-            onClick={() => onChange('')}
-            className="rounded-[16px] bg-white/90 px-3 py-1.5 text-[14px] font-medium text-ink"
-          >
-            Remove
-          </button>
+        <img
+          src={value}
+          alt="Hero"
+          className={
+            bare
+              ? 'block max-h-full max-w-full rounded-[18px] object-contain'
+              : 'w-full @3xl:h-full @3xl:object-cover'
+          }
+        />
+        {/* Same hover vocabulary as an option's media on a feedback page — edit
+            and delete as icon buttons over a scrim — so the two read as the same
+            kind of object. Centred on the bare variant so the controls always
+            land on the image, which object-contain letterboxes in the middle of
+            the padded box. */}
+        <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/25 opacity-0 transition group-hover:opacity-100">
+          {/* The hero is letterboxed into whatever the canvas column leaves it,
+              and on the framed variant it's cropped outright — so seeing the
+              whole thing needs its own control. */}
+          <MediaIconBtn tip="Expand" onClick={() => setZoom(true)}>
+            {ExpandGlyph}
+          </MediaIconBtn>
+          <MediaIconBtn tip="Edit" onClick={openUpload}>
+            {EditGlyph}
+          </MediaIconBtn>
+          <MediaIconBtn tip="Delete" onClick={() => onChange('')}>
+            {DeleteGlyph}
+          </MediaIconBtn>
         </div>
         <input ref={inputRef} type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
+        {zoom && (
+          <MediaLightbox media={{ type: 'image', src: value, title: label, alt: '' }} onClose={() => setZoom(false)} />
+        )}
       </div>
     )
   }
@@ -95,9 +116,12 @@ export default function ImageUpload({
         }}
         className="flex h-full min-h-[300px] w-full flex-col items-center justify-center rounded-2xl border border-dashed border-line-strong bg-black/[0.015] px-6 text-center transition hover:bg-black/[0.03] disabled:cursor-wait disabled:opacity-70 @3xl:min-h-[440px]"
       >
-        <span className="text-2xl text-muted">⤒</span>
-        <span className="mt-2 text-[14px] font-medium">{busy ? 'Uploading…' : label}</span>
-        <span className="mt-0.5 text-[13px] text-muted">Click or drop an image/GIF · optional</span>
+        {/* This zone owns half the welcome screen, so it's typed to that size —
+            at the 13/14px of a properties-rail control the copy looked lost in
+            the middle of the column. */}
+        <span className="text-4xl leading-none text-muted">⤒</span>
+        <span className="mt-4 text-[19px] font-semibold tracking-tight">{busy ? 'Uploading…' : label}</span>
+        <span className="mt-1 text-[15px] text-muted">Click or drop an image/GIF · optional</span>
       </button>
       {error && <p className="mt-2 text-[13px] text-red-600">{error}</p>}
       <input ref={inputRef} type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
