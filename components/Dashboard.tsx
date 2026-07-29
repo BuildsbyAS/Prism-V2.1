@@ -92,17 +92,20 @@ const STATUS_ORDER: Record<FormStatus, number> = { draft: 0, open: 1, closed: 2 
  * One shared column template for the header and every row, so the list reads as
  * a table rather than a stack of independently-sized rows.
  *
- * Columns: Status · Form · [Collaborator] · Expires · Responses · Actions.
+ * Columns: Status · Form · [Pod] · [Collaborator] · Expires · Responses · Actions.
  * Text columns are left-aligned, dates and counts right-aligned against the
- * actions. The template changes per breakpoint in step with which cells are
- * hidden — a `display:none` cell takes no grid track, so the counts have to
- * match or every row shifts.
+ * actions. The action track is fixed rather than `auto`: the header has no
+ * buttons to size it, while Team rows can carry two, and independent auto-sized
+ * grids would otherwise put every preceding column at a different x-position.
+ * The template changes per breakpoint in step with which cells are hidden — a
+ * `display:none` cell takes no grid track, so the counts have to match or every
+ * row shifts.
  */
 const ROW_GRID: Record<DashboardTab, string> = {
-  mine: 'grid-cols-[84px_minmax(0,1fr)_auto] sm:grid-cols-[84px_minmax(0,1fr)_96px_auto] lg:grid-cols-[84px_minmax(0,1fr)_104px_96px_auto]',
+  mine: 'grid-cols-[84px_minmax(0,1fr)_184px] sm:grid-cols-[84px_minmax(0,1fr)_96px_184px] lg:grid-cols-[84px_minmax(0,1fr)_104px_96px_184px]',
   // Team carries a Pod column: it's how the team feed is navigated, so it earns
   // a place from sm up rather than waiting for lg like Collaborator and Expires.
-  team: 'grid-cols-[84px_minmax(0,1fr)_auto] sm:grid-cols-[84px_minmax(0,1fr)_112px_96px_auto] lg:grid-cols-[84px_minmax(0,1fr)_112px_150px_104px_96px_auto]',
+  team: 'grid-cols-[84px_minmax(0,1fr)_184px] sm:grid-cols-[84px_minmax(0,1fr)_112px_96px_184px] lg:grid-cols-[84px_minmax(0,1fr)_112px_150px_104px_96px_184px]',
 }
 
 /** Just the date. The column header carries the "expires" part, and the full
@@ -1123,7 +1126,7 @@ function ListHeader({ tab, showCreator }: { tab: DashboardTab; showCreator: bool
       {showCreator && <span className={`hidden lg:block ${cell}`}>Collaborator</span>}
       <span className={`hidden text-right lg:block ${cell}`}>Expires</span>
       <span className={`text-right ${cell}`}>Responses</span>
-      <span className="w-[124px]" />
+      <span aria-hidden="true" />
     </div>
   )
 }

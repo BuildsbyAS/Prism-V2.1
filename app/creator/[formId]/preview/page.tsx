@@ -1,13 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import type { FullForm } from '@/lib/types'
 import { getFullForm, DEMO_STORAGE_KEY } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
 import { formName, hasResults } from '@/lib/builder'
-import { ArrowLeft } from '@phosphor-icons/react'
+import { ArrowLeft, ArrowSquareOut, Check, Info, LinkSimple } from '@phosphor-icons/react'
 import StatusBadge from '@/components/StatusBadge'
 import FormHeader from '@/components/builder/FormHeader'
 import DeviceSwitch, { type Device } from '@/components/builder/DeviceSwitch'
@@ -31,6 +31,8 @@ export default function FormPreviewPage() {
   const [full, setFull] = useState<FullForm | null>(null)
   const [missing, setMissing] = useState(false)
   const [device, setDevice] = useState<Device>('desktop')
+  const [copied, setCopied] = useState(false)
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Bumped to remount the iframe — see refresh().
   const [reloadKey, setReloadKey] = useState(0)
   /**
@@ -63,6 +65,13 @@ export default function FormPreviewPage() {
     refresh()
   }, [refresh])
 
+  useEffect(
+    () => () => {
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    },
+    [],
+  )
+
   /**
    * Follow edits made elsewhere. The builder is usually a second tab, and in
    * demo mode it writes to localStorage — which fires `storage` in *other* tabs
@@ -84,6 +93,30 @@ export default function FormPreviewPage() {
 
   // Someone else's form has no Editor tab — there is nothing behind it for you.
   const canEdit = Boolean(full && user && full.form.creator_id === user.id)
+  const publicPath = full ? `/f/${full.form.slug}` : null
+
+  async function copyFormLink() {
+    if (!publicPath) return
+    const url = new URL(publicPath, window.location.origin).toString()
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      // Clipboard permissions can be unavailable in an embedded browser. Keep
+      // the action working through the older selection API in that case.
+      const field = document.createElement('textarea')
+      field.value = url
+      field.setAttribute('readonly', '')
+      field.style.position = 'fixed'
+      field.style.opacity = '0'
+      document.body.appendChild(field)
+      field.select()
+      document.execCommand('copy')
+      field.remove()
+    }
+    setCopied(true)
+    if (copyResetTimer.current) clearTimeout(copyResetTimer.current)
+    copyResetTimer.current = setTimeout(() => setCopied(false), 1800)
+  }
 
   if (missing) {
     return (
@@ -114,35 +147,70 @@ export default function FormPreviewPage() {
         }
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       >
+        {publicPath && full?.form.status !== 'draft' && (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={copyFormLink}
+              aria-label={copied ? 'Form link copied' : 'Copy form link'}
+              className="inline-flex h-8 items-center gap-1.5 rounded-[10px] border border-line bg-card px-2.5 font-medium text-ink transition hover:bg-black/[0.03]"
+            >
+              {copied ? <Check size={15} weight="bold" aria-hidden="true" /> : <LinkSimple size={15} aria-hidden="true" />}
+              <span className="hidden xl:inline">{copied ? 'Copied' : 'Copy form link'}</span>
+            </button>
+            <Link
+              href={publicPath}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open form in a new tab"
+              className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-ink px-2.5 font-medium text-white transition hover:opacity-90"
+            >
+              <ArrowSquareOut size={15} aria-hidden="true" />
+              <span className="hidden xl:inline">Open form</span>
+            </Link>
+          </div>
+        )}
         <DeviceSwitch value={device} onChange={setDevice} />
       </FormHeader>
 
-      <main className="u-view flex h-[calc(100dvh-3.5rem)] justify-center overflow-hidden bg-black/[0.04] p-6">
-        {full ? (
-          <div
-            className={`h-full overflow-hidden bg-white transition-[width] duration-300 ease-out ${
-              device === 'desktop'
-                ? 'w-full rounded-[18px]'
-                : 'rounded-[28px] border border-line shadow-[0_16px_44px_-24px_rgba(0,0,0,0.3)]'
-            }`}
-            style={{ width: PREVIEW_WIDTH[device], maxWidth: '100%' }}
-          >
-            {/* preview=1 keeps the voter page from counting this as a real run;
-                start picks the screen, so opening Preview from the builder lands
-                where you were editing instead of back at the introduction.
-                `key` is what makes refresh() reload it — the src is unchanged, so
-                without it React keeps the document already in the frame. */}
-            <iframe
-              key={reloadKey}
-              src={`/f/${full.form.slug}?preview=1${start ? `&start=${encodeURIComponent(start)}` : ''}`}
-              title={`Preview of ${formName(full.form)}`}
-              className="h-full w-full border-0"
-            />
-          </div>
-        ) : (
-          <div className="h-full w-full animate-pulse rounded-[18px] bg-black/[0.03]" />
-        )}
-      </main>
+      <div className="flex h-[calc(100dvh-3.5rem)] flex-col overflow-hidden">
+        <div
+          role="note"
+          className="flex flex-none items-center justify-center gap-1.5 border-b border-line bg-card px-4 py-2 text-center text-[12px] text-muted"
+        >
+          <Info size={14} className="flex-none" aria-hidden="true" />
+          <span>
+            Preview mode — any votes or responses you submit here are for testing only. Nothing is saved or counted in results.
+          </span>
+        </div>
+
+        <main className="u-view flex min-h-0 flex-1 justify-center overflow-hidden bg-black/[0.04] p-6">
+          {full ? (
+            <div
+              className={`h-full overflow-hidden bg-white transition-[width] duration-300 ease-out ${
+                device === 'desktop'
+                  ? 'w-full rounded-[18px]'
+                  : 'rounded-[28px] border border-line shadow-[0_16px_44px_-24px_rgba(0,0,0,0.3)]'
+              }`}
+              style={{ width: PREVIEW_WIDTH[device], maxWidth: '100%' }}
+            >
+              {/* preview=1 keeps the voter page from counting this as a real run;
+                  start picks the screen, so opening Preview from the builder lands
+                  where you were editing instead of back at the introduction.
+                  `key` is what makes refresh() reload it — the src is unchanged, so
+                  without it React keeps the document already in the frame. */}
+              <iframe
+                key={reloadKey}
+                src={`/f/${full.form.slug}?preview=1${start ? `&start=${encodeURIComponent(start)}` : ''}`}
+                title={`Preview of ${formName(full.form)}`}
+                className="h-full w-full border-0"
+              />
+            </div>
+          ) : (
+            <div className="h-full w-full animate-pulse rounded-[18px] bg-black/[0.03]" />
+          )}
+        </main>
+      </div>
     </>
   )
 }
