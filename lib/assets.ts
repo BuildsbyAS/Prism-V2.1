@@ -45,9 +45,35 @@ function toDataUrl(blob: Blob): Promise<string> {
   })
 }
 
-/** Longest edge for a demo-mode image, and the JPEG quality it re-encodes at. */
+/** Longest edge for a demo-mode image, and the quality it re-encodes at. */
 const DEMO_MAX_EDGE = 1600
 const DEMO_QUALITY = 0.82
+
+/** Formats that can carry an alpha channel — the only ones worth scanning. */
+const ALPHA_CAPABLE = /png|webp|avif/
+
+/**
+ * Does anything in the canvas show through?
+ *
+ * Scans every pixel's alpha rather than sampling: transparency is often just a
+ * logo's rounded corners or a cut-out edge, so a strided sample would miss it on
+ * exactly the images that most need catching. One pass over a ≤1600px canvas
+ * costs a few milliseconds, once, at upload.
+ */
+function hasTransparency(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
+  try {
+    const { data } = ctx.getImageData(0, 0, w, h)
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] < 255) return true
+    }
+    return false
+  } catch {
+    // Reading back can throw (a tainted canvas, or memory pressure on a big
+    // one). Assume alpha: the worst case is a slightly larger file, where the
+    // other branch's worst case is a black box where the transparency was.
+    return true
+  }
+}
 
 /**
  * Shrink an image before it becomes a base64 data URL.
@@ -87,10 +113,19 @@ async function shrinkForDemo(file: Blob): Promise<Blob> {
     ctx.drawImage(bitmap, 0, 0, w, h)
     bitmap.close()
 
+    // JPEG has no alpha channel. A transparent PNG drawn onto a fresh canvas
+    // sits on rgba(0,0,0,0), so encoding it as JPEG discards the alpha and
+    // leaves the RGB behind it — pure black. That's the "my logo came back on a
+    // black background" bug. WebP keeps the alpha; JPEG stays the default for
+    // opaque photos, where it's the smaller of the two.
+    const transparent = ALPHA_CAPABLE.test(type) && hasTransparency(ctx, w, h)
     const out = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', DEMO_QUALITY),
+      canvas.toBlob(resolve, transparent ? 'image/webp' : 'image/jpeg', DEMO_QUALITY),
     )
     // Keep whichever is actually smaller — a small PNG can beat its own JPEG.
+    // A browser with no WebP encoder falls back to PNG per spec, which is bigger
+    // than the source more often than not; this check quietly keeps the original
+    // in that case, and the alpha survives either way.
     return out && out.size < file.size ? out : file
   } catch {
     return file

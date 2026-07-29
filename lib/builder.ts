@@ -4,6 +4,16 @@
 //   feedback page → options to compare (select) + inputs (voters respond)
 //   static page   → a context screen (title/body/media, no response)
 
+import type { Icon } from '@phosphor-icons/react'
+import {
+  ArrowsLeftRight,
+  Microphone,
+  RadioButton,
+  SquareSplitHorizontal,
+  Star,
+  TextAlignLeft,
+  TextAa,
+} from '@phosphor-icons/react'
 import type { EmbedType, Form, Option, Page, PageType, Widget, WidgetType } from './types'
 
 /**
@@ -22,6 +32,25 @@ export const POD_OPTIONS = [
   'Storefront',
   'UGC',
 ] as const
+
+/** "a, b and c" — for naming what a form is still missing. */
+export function listOut(items: string[]): string {
+  if (items.length < 2) return items[0] ?? ''
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
+/**
+ * Does this form have results to show?
+ *
+ * A form leaves 'draft' exactly when it is published, so status is the record of
+ * whether it has ever been live — and a form that has never been live has
+ * nothing to report. Unpublishing puts it back to draft and hides the tab again,
+ * which is deliberate: a form being reworked shouldn't advertise numbers from
+ * its last outing.
+ */
+export function hasResults(form: Pick<Form, 'status'>): boolean {
+  return form.status !== 'draft'
+}
 
 /** Everything a form needs before it can go live, beyond its content. */
 export function publishDetailsMissing(form: Pick<Form, 'name' | 'title' | 'pod' | 'expires_at'>): string[] {
@@ -102,26 +131,30 @@ export function dupPage(p: Page): Page {
   return { ...p, id: uid(), title: p.title ? `${p.title} copy` : p.title }
 }
 
-export const WIDGET_META: Record<WidgetType, { label: string; glyph: string; hint: string }> = {
-  rating: { label: 'Rating', glyph: '★', hint: '1–5 stars' },
-  slider: { label: 'Slider', glyph: '⇄', hint: '0–100 with axis labels' },
-  radio: { label: 'Multiple choice', glyph: '◉', hint: 'A / B / C or custom' },
-  text: { label: 'Text', glyph: '¶', hint: 'Short or long answer' },
-  voice: { label: 'Voice', glyph: '🎤', hint: 'Record a voice note' },
+// `icon` is a Phosphor component rather than a character. The glyphs it replaces
+// were whatever Unicode happened to be close (★ ⇄ ◉ ¶ 🎤) — five different
+// faces, one of them an emoji that rendered in colour on macOS and as a box
+// elsewhere.
+export const WIDGET_META: Record<WidgetType, { label: string; icon: Icon; hint: string }> = {
+  rating: { label: 'Rating', icon: Star, hint: '1–5 stars' },
+  slider: { label: 'Slider', icon: ArrowsLeftRight, hint: '0–100 with axis labels' },
+  radio: { label: 'Multiple choice', icon: RadioButton, hint: 'A / B / C or custom' },
+  text: { label: 'Text', icon: TextAa, hint: 'Short or long answer' },
+  voice: { label: 'Voice', icon: Microphone, hint: 'Record a voice note' },
 }
 
 // `label` names the page everywhere it appears: the type picker, the left rail,
 // confirmations. Named for what the page *does* for the creator rather than what
 // it is — "Get Vote" and "Set Context" say which one to reach for; "Feedback" and
 // "Static" described the mechanism and left you to work that out.
-export const PAGE_META: Record<PageType, { label: string; glyph: string; hint: string }> = {
-  // Glyphs picked to read at a glance: a split pane for the A/B compare, lines
-  // of copy for the read-only page. The old ▦/▤ pair was near-identical at 13px.
+export const PAGE_META: Record<PageType, { label: string; icon: Icon; hint: string }> = {
+  // Icons picked to read at a glance: a split pane for the A/B compare, lines
+  // of copy for the read-only page.
   // The hints say what the page is *for*, not what it mechanically does: "no
   // response collected" described the absence of a feature and left the creator
   // to guess when they'd ever want one.
-  feedback: { label: 'Get Vote', glyph: '◫', hint: 'Compare options & collect responses' },
-  static: { label: 'Set Context', glyph: '▤', hint: 'Brief voters before they choose — the metric you’re targeting, constraints, what ships today' },
+  feedback: { label: 'Get Vote', icon: SquareSplitHorizontal, hint: 'Compare options & collect responses' },
+  static: { label: 'Set Context', icon: TextAlignLeft, hint: 'Brief voters before they choose — the metric you’re targeting, constraints, what ships today' },
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +172,8 @@ export type Selection =
 // ---------------------------------------------------------------------------
 export interface Readiness {
   welcome: boolean
+  /** Which parts of the introduction page are still blank, for the blocker copy. */
+  welcomeMissing: string[]
   middle: boolean
   thankyou: boolean
   publishable: boolean
@@ -181,20 +216,26 @@ export function pageHasContent(page: Page, options: Option[], widgets: Widget[])
 }
 
 export function readiness(
-  form: Pick<Form, 'title' | 'body_copy' | 'thank_you_message'>,
+  form: Pick<Form, 'title' | 'body_copy' | 'hero_image_url' | 'thank_you_message'>,
   pages: Page[],
   options: Option[],
   widgets: Widget[],
 ): Readiness {
-  // The welcome screen is the voter's brief: title and subtitle are both
-  // required before a form can publish.
-  const welcome = Boolean(form.title.trim()) && Boolean(form.body_copy.trim())
+  // The welcome screen is the voter's brief: a title, a subtitle and the image
+  // being asked about are all required before a form can publish. The image
+  // earns its place on that list — it is the thing a voter is there to look at,
+  // and a form that opens on a wall of text is one they bounce off.
+  const welcomeMissing: string[] = []
+  if (!form.title.trim()) welcomeMissing.push('a title')
+  if (!form.body_copy.trim()) welcomeMissing.push('a subtitle')
+  if (!form.hero_image_url.trim()) welcomeMissing.push('an image')
+  const welcome = welcomeMissing.length === 0
   // Specifically a *feedback* page: a form of nothing but static pages collects
   // no answers, so publishing one would hand voters a link they can't respond
   // to. Static pages are context for a comparison, never the whole form.
   const middle = pages.some((p) => p.type === 'feedback' && pageReady(p, options, widgets))
   const thankyou = Boolean(form.thank_you_message.trim())
-  return { welcome, middle, thankyou, publishable: welcome && middle }
+  return { welcome, welcomeMissing, middle, thankyou, publishable: welcome && middle }
 }
 
 /**
@@ -208,7 +249,7 @@ export function readiness(
  */
 export function publishBlocker(ready: Readiness, pages: Page[]): string | null {
   if (ready.publishable) return null
-  if (!ready.welcome) return 'Add a title and subtitle to the introduction page before publishing.'
+  if (!ready.welcome) return `Add ${listOut(ready.welcomeMissing)} to the introduction page before publishing.`
   return pages.some((p) => p.type === 'feedback')
     ? 'Finish your Get Vote page — it needs a title and 2 options, or 1 option and a question.'
     : 'Add at least one Get Vote page — a form needs one to collect responses.'

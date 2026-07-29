@@ -5,6 +5,7 @@ import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/typ
 import { WIDGET_META, PAGE_META, MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL } from '@/lib/embed'
 import { HERO_GRADIENTS, HERO_SOLIDS, hasHeroBg, isCustomHeroBg, isHeroGradient } from '@/lib/hero'
+import { CaretDown } from '@phosphor-icons/react'
 import { Field, Toggle, TextInput, NumberInput } from './controls'
 
 function Group({ title, className = '', children }: { title?: string; className?: string; children: React.ReactNode }) {
@@ -80,6 +81,7 @@ export function PageProperties({
         <div className="grid grid-cols-2 gap-1.5">
           {PAGE_TYPES.map((t) => {
             const selected = page.type === t
+            const PageIcon = PAGE_META[t].icon
             return (
               <button
                 key={t}
@@ -90,8 +92,8 @@ export function PageProperties({
                   selected ? 'border-ink bg-black/[0.04]' : 'border-line-strong hover:bg-black/[0.03]'
                 }`}
               >
-                <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">
-                  {PAGE_META[t].glyph}
+                <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06]">
+                  <PageIcon size={14} aria-hidden="true" />
                 </span>
                 <span className="text-[13px] font-medium leading-tight">{PAGE_META[t].label}</span>
               </button>
@@ -113,6 +115,7 @@ export function PageProperties({
         <Group title="Feedback inputs" className={flash ? 'u-flash' : ''}>
           {widgets.map((w) => {
             const open = selectedInputKey === w.id
+            const InputIcon = WIDGET_META[w.type].icon
             return (
               <div key={w.id}>
                 {/* This row *is* the type control — a transparent native select
@@ -130,13 +133,11 @@ export function PageProperties({
                     open ? 'border-ink bg-black/[0.04]' : 'border-line-strong hover:bg-black/[0.03]'
                   }`}
                 >
-                  <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">
-                    {WIDGET_META[w.type].glyph}
+                  <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06]">
+                    <InputIcon size={14} aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{WIDGET_META[w.type].label}</span>
-                  <span aria-hidden="true" className="flex-none text-[13px] leading-none text-muted">
-                    ⌄
-                  </span>
+                  <CaretDown size={13} aria-hidden="true" className="flex-none text-muted" />
                   <select
                     value={w.type}
                     aria-label="Feedback input type"
@@ -197,7 +198,9 @@ export function PageProperties({
 function AddInputMenu({ full, onAdd }: { full: boolean; onAdd: (t: WidgetType) => void }) {
   return (
     <div className="grid grid-cols-3 gap-1.5">
-      {WIDGET_TYPES.map((t) => (
+      {WIDGET_TYPES.map((t) => {
+        const TypeIcon = WIDGET_META[t].icon
+        return (
         <button
           key={t}
           type="button"
@@ -208,10 +211,13 @@ function AddInputMenu({ full, onAdd }: { full: boolean; onAdd: (t: WidgetType) =
           title="Click to add, or drag onto the widget slot"
           className="flex cursor-grab flex-col items-center gap-1 rounded-xl border border-line-strong px-2.5 py-2.5 text-center transition hover:bg-black/[0.03] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">{WIDGET_META[t].glyph}</span>
+          <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06]">
+            <TypeIcon size={14} aria-hidden="true" />
+          </span>
           <span className="text-[13px] font-medium leading-tight">{WIDGET_META[t].label}</span>
         </button>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -223,6 +229,7 @@ const ALT_MAX = 125
 export function OptionProperties({
   option,
   heading,
+  flash = false,
   onChange,
   onDelete,
   onOpenMedia,
@@ -232,6 +239,8 @@ export function OptionProperties({
   /** Names the option these settings belong to — they now sit below the page's
    *  own properties rather than replacing them, so they have to say whose. */
   heading?: string
+  /** Pulses that heading — set when the panel had to scroll to bring it in. */
+  flash?: boolean
   onChange: (p: Partial<Option>) => void
   onDelete: () => void
   onOpenMedia: () => void
@@ -242,7 +251,15 @@ export function OptionProperties({
   return (
     <>
       {heading && (
-        <p className="border-b border-line bg-black/[0.02] px-4 py-2.5 text-[13px] font-semibold tracking-tight">
+        // data-option-panel is how the builder finds this section to scroll the
+        // properties column to it — selecting an option on the canvas appends
+        // these settings below the page's own, often past the fold.
+        <p
+          data-option-panel
+          className={`border-b border-line bg-black/[0.02] px-4 py-2.5 text-[13px] font-semibold tracking-tight ${
+            flash ? 'u-flash' : ''
+          }`}
+        >
           {heading}
         </p>
       )}

@@ -70,7 +70,7 @@ export default function ConfirmDialog({
         className="u-modal w-full max-w-[400px] overflow-hidden rounded-[22px] border border-line bg-card p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_24px_60px_-24px_rgba(0,0,0,0.35)]"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <h2 id={titleId} className="text-[17px] font-semibold tracking-tight">
+        <h2 id={titleId} className="font-sans text-[17px] font-semibold tracking-tight">
           {title}
         </h2>
         {body && <p className="mt-1.5 text-[14px] leading-relaxed text-muted">{body}</p>}

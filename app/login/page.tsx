@@ -1,8 +1,10 @@
 'use client'
 
+import { ArrowRight } from '@phosphor-icons/react'
 import { Suspense, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase, isSupabaseConfigured, isAllowedEmail, ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
+import { HOME_AFTER_SIGN_IN } from '@/lib/routes'
 
 type Mode = 'signin' | 'signup'
 
@@ -13,7 +15,7 @@ type Mode = 'signin' | 'signup'
  * check — a lone `startsWith('/')` would wave it through.
  */
 function safeNext(next: string | null): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/creator'
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return HOME_AFTER_SIGN_IN
   return next
 }
 
@@ -100,10 +102,10 @@ function LoginForm() {
             </div>
             <button
               type="button"
-              onClick={() => router.push('/creator')}
+              onClick={() => router.push(next)}
               className="mt-4 w-full rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
             >
-              Continue in demo mode →
+              Continue in demo mode <ArrowRight size={14} aria-hidden="true" />
             </button>
           </>
         ) : (

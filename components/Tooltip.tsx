@@ -19,11 +19,14 @@ export default function Tooltip({
   label,
   side = 'top',
   className = '',
+  /** For triggers whose size is computed — a chart segment's width, say. */
+  style,
   children,
 }: {
   label: string
   side?: 'top' | 'bottom'
   className?: string
+  style?: React.CSSProperties
   children: React.ReactNode
 }) {
   const triggerRef = useRef<HTMLSpanElement>(null)
@@ -73,6 +76,7 @@ export default function Tooltip({
     <span
       ref={triggerRef}
       className={`relative inline-flex ${className}`}
+      style={style}
       onPointerEnter={show}
       onPointerLeave={hide}
       onPointerDown={hide}

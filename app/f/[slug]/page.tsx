@@ -11,10 +11,12 @@ import {
   hasResponded,
   isAlreadyResponded,
   isLoginRequired,
+  isFormNotAccepting,
   VOTING_REQUIRES_LOGIN,
 } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
 import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
+import { ArrowClockwise, ArrowDown, Check } from '@phosphor-icons/react'
 import Link from 'next/link'
 import ZoomableMedia from '@/components/ZoomableMedia'
 import MediaLightbox, { optionMedia, type LightboxMedia } from '@/components/MediaLightbox'
@@ -24,6 +26,21 @@ import { formName } from '@/lib/builder'
 import HeroPanel from '@/components/HeroPanel'
 
 type Phase = 'welcome' | 'vote' | 'submitting' | 'done'
+
+/**
+ * How the media column lays out, by option count.
+ *
+ * Written out in full rather than composed (`'xl:grid-cols-' + n`): Tailwind
+ * scans source for complete class names, so a constructed one is never
+ * generated and the column silently keeps the previous layout. Four options go
+ * 2×2 rather than four abreast — a quarter-width prototype is unreadable.
+ */
+const MEDIA_GRID: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-1 sm:grid-cols-2',
+  3: 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-3',
+  4: 'grid-cols-1 sm:grid-cols-2',
+}
 
 function sessionId(slug: string): string {
   const key = `prism-session:${slug}`
@@ -50,6 +67,12 @@ export default function VoterPage() {
   const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading')
   const [phase, setPhase] = useState<Phase>('welcome')
   const [choices, setChoices] = useState<Record<string, string>>({}) // page_id -> option_id | 'tie'
+  // Which page the voter is on. The form used to render every page in one long
+  // scroll; it is a sequence of steps now, so exactly one is on screen at a time.
+  const [step, setStep] = useState(0)
+  // The option the pointer is over on the left, which lifts its media on the
+  // right and dims the rest.
+  const [hovered, setHovered] = useState<string | null>(null)
   const [answers, setAnswers] = useState<Record<string, AnswerValue>>({})
   const [results, setResults] = useState<FormResults | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -69,7 +92,6 @@ export default function VoterPage() {
   // Only the hero needs the page to hold this; every other piece of media on the
   // voter's page owns its own viewer through ZoomableMedia.
   const [zoom, setZoom] = useState<LightboxMedia | null>(null)
-  const pendingScroll = useRef<string | null>(null)
 
   useEffect(() => {
     getPublicForm(slug).then((f) => {
@@ -91,7 +113,10 @@ export default function VoterPage() {
           if (f.form.show_results_to_voters) getResults(f.form.id).then(setResults)
           setPhase('done')
         } else if (start && start !== 'welcome') {
-          pendingScroll.current = start
+          // Open the screen the creator hit Preview from. It's a step index now,
+          // not a scroll target.
+          const at = f.pages.findIndex((p) => p.id === start)
+          if (at >= 0) setStep(at)
           setPhase('vote')
         }
         return
@@ -117,17 +142,49 @@ export default function VoterPage() {
     })
   }, [slug, preview, authLoading, user?.id])
 
-  // In preview, jump to the page the creator was editing.
-  useEffect(() => {
-    if (phase !== 'vote' || !pendingScroll.current) return
-    const id = pendingScroll.current
-    pendingScroll.current = null
-    const t = setTimeout(() => document.getElementById(`page-${id}`)?.scrollIntoView({ block: 'start' }), 60)
-    return () => clearTimeout(t)
-  }, [phase])
+  /**
+   * What a single step still needs before the voter can move on.
+   *
+   * Checked per step rather than only at the end: the form is one page at a
+   * time now, so an unanswered question three screens back can't be pointed at
+   * — it has to be caught while it's still on screen.
+   */
+  function stepBlocker(pageIndex: number): string | null {
+    if (!full) return null
+    const page = full.pages[pageIndex]
+    if (!page || page.type !== 'feedback') return null
+    if ((voteOptions[page.id]?.length ?? 0) > 0 && !choices[page.id]) {
+      return 'Choose an option to continue.'
+    }
+    const unanswered = full.widgets.filter(
+      (w) => w.page_id === page.id && w.config.required && answers[w.id] === undefined,
+    )
+    return unanswered.length ? 'Please answer the required questions.' : null
+  }
+
+  function goToStep(next: number) {
+    setError(null)
+    setStep(next)
+    // Each step is its own screen, so it starts at the top like a page load.
+    window.scrollTo({ top: 0 })
+  }
+
+  function nextStep() {
+    const blocker = stepBlocker(step)
+    if (blocker) return setError(blocker)
+    goToStep(step + 1)
+  }
 
   async function submit() {
     if (!full || submittingRef.current || hasVoted) return
+    // The step in front of the voter answers for itself first: every earlier one
+    // was cleared on the way through, so naming "each comparison" here would
+    // point at pages they can no longer see.
+    const here = stepBlocker(step)
+    if (here) {
+      setError(here)
+      return
+    }
     // Every comparison must have a pick (an option or "they all feel equal") —
     // a response with no choice is meaningless.
     const undecided = full.pages.filter(
@@ -148,6 +205,16 @@ export default function VoterPage() {
       setError('Please answer the required questions.')
       return
     }
+    // The creator walking their own form. They see the whole flow through to the
+    // end screen — that's what preview is for — but nothing is recorded: a
+    // rehearsal must not land in the tally they'll read the real results from.
+    if (preview) {
+      setHasVoted(true)
+      if (full.form.show_results_to_voters) setResults(await getResults(full.form.id))
+      setPhase('done')
+      return
+    }
+
     submittingRef.current = true
     setError(null)
     setPhase('submitting')
@@ -165,6 +232,12 @@ export default function VoterPage() {
         setAlreadyVoted(true)
         if (full.form.show_results_to_voters) setResults(await getResults(full.form.id))
         setPhase('done')
+        return
+      }
+      // Closed, unpublished, or expired between loading the form and submitting.
+      if (isFormNotAccepting(e)) {
+        setError('This form isn’t taking responses any more.')
+        setPhase('vote')
         return
       }
       // The session expired between loading the form and submitting.
@@ -188,6 +261,7 @@ export default function VoterPage() {
     setResults(null)
     setHasVoted(false)
     setError(null)
+    setStep(0)
     setPhase('welcome')
     window.scrollTo({ top: 0 })
   }
@@ -196,7 +270,7 @@ export default function VoterPage() {
   if (state === 'missing' || !full) {
     return (
       <Centered>
-        <h1 className="text-xl font-semibold">Form not found</h1>
+        <h1 className="font-sans text-xl font-semibold">Form not found</h1>
         <p className="mt-2 text-[15px] text-muted">This link may be closed or mistyped.</p>
       </Centered>
     )
@@ -208,7 +282,7 @@ export default function VoterPage() {
   if (expired && full.form.expires_at) {
     return (
       <Centered>
-        <h1 className="text-xl font-semibold">This form has closed</h1>
+        <h1 className="font-sans text-xl font-semibold">This form has closed</h1>
         <p className="mt-2 text-[15px] text-muted">
           It stopped taking responses on{' '}
           {new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.
@@ -278,6 +352,151 @@ export default function VoterPage() {
     )
   }
 
+  // ------------------------------- Vote ------------------------------------
+  // One page per screen, moved through with Back / Next — the form used to
+  // render every page in a single scroll, which buried the second comparison
+  // and made "submit" mean "you're done with all of it" rather than "with this".
+  //
+  // Two columns: the brief and the decision on the left at 40%, the work being
+  // judged on the right at 60%. The media is the reason the voter is here, so
+  // it gets the room; the question stays beside it rather than above it, where
+  // a tall prototype would push it off screen.
+  if (phase === 'vote' || phase === 'submitting') {
+    const page = full.pages[step]
+    if (!page) return <Centered>This form has nothing to vote on yet.</Centered>
+
+    const opts = voteOptions[page.id] ?? []
+    const wids = full.widgets
+      .filter((w) => w.page_id === page.id)
+      .sort((a, b) => a.order_index - b.order_index)
+    const isLast = step === full.pages.length - 1
+    const picked = choices[page.id]
+    const busy = phase === 'submitting'
+    // Dimming is a hover behaviour, not a record of the answer: a chosen option
+    // marks itself (border, badge, button) without greying out the others, so
+    // the voter can still compare — and change their mind — afterwards.
+    const focus = hovered
+    const selectable = page.type === 'feedback' && opts.length > 0
+    // Nothing to argue about: until an answer is picked there is no response to
+    // record, so the way forward stays shut rather than erroring on click.
+    const needsPick = selectable && !picked
+
+    return (
+      <main className="flex min-h-dvh w-full flex-col">
+        {/* The 40/60 split holds whether or not anything was uploaded: a context
+            screen with no media should read exactly like one with it, and
+            collapsing to a single column re-centred the copy mid-page — the
+            same words jumped position between two steps of the same form. */}
+        <div className="grid w-full flex-1 grid-cols-1 lg:grid-cols-[30fr_70fr]">
+          {/* Left — the brief, the choice, the questions, the way on. Ordered
+              second below lg so the media leads on a phone: you look, then judge. */}
+          <div className="order-2 flex flex-col justify-center px-6 py-10 sm:px-10 lg:order-1 lg:h-dvh lg:overflow-y-auto lg:px-14">
+            <div key={page.id} className="u-rise mx-auto w-full max-w-[560px]">
+              <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+              {page.title && (
+                <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
+              )}
+              {page.body && (
+                <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
+              )}
+
+              {page.type === 'feedback' &&
+                wids.map((w) => (
+                  <div key={w.id} className="mt-6">
+                    <WidgetInput
+                      widget={w}
+                      value={answers[w.id]}
+                      onChange={(v) => setAnswers((a) => ({ ...a, [w.id]: v }))}
+                      hideLabel={w.config.showTitle === false}
+                    />
+                  </div>
+                ))}
+
+              {error && <p className="mt-4 text-[14px] text-red-600">{error}</p>}
+
+              <div className="mt-8 flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => (step === 0 ? setPhase('welcome') : goToStep(step - 1))}
+                  disabled={busy}
+                  className="rounded-[16px] border border-line-strong px-4 py-2.5 text-[14px] font-medium text-ink transition hover:bg-black/[0.03] disabled:opacity-40"
+                >
+                  Back
+                </button>
+                {isLast ? (
+                  <button
+                    type="button"
+                    onClick={submit}
+                    disabled={busy || hasVoted || needsPick}
+                    className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {busy ? 'Submitting…' : 'Submit'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={nextStep}
+                    disabled={needsPick}
+                    className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                )}
+                {full.pages.length > 1 && (
+                  <span className="ml-auto text-[13px] tabular-nums text-muted">
+                    {step + 1} of {full.pages.length}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right — what is being judged. With nothing to show it still holds
+              the column open on desktop, but stays out of the way on a phone,
+              where an empty panel above the copy would just read as broken. */}
+          {opts.length === 0 ? (
+            <div className="order-1 hidden bg-black/[0.04] lg:order-2 lg:block lg:h-dvh" />
+          ) : (
+            <div className="order-1 bg-black/[0.04] p-4 sm:p-6 lg:order-2 lg:h-dvh lg:overflow-y-auto">
+              <div className={`grid gap-4 ${MEDIA_GRID[Math.min(opts.length, 4)] ?? MEDIA_GRID[2]}`}>
+                {opts.map((o, i) => (
+                  <MediaCell
+                    key={o.id}
+                    option={o}
+                    badge={String.fromCharCode(65 + i)}
+                    labelled={selectable}
+                    dimmed={Boolean(focus) && focus !== o.id}
+                    lifted={focus === o.id}
+                    selected={picked === o.id}
+                    onSelect={selectable ? () => setChoices((c) => ({ ...c, [page.id]: o.id })) : undefined}
+                    disabled={hasVoted || busy}
+                    resetKey={protoResets[o.id] ?? 0}
+                    onReset={() => setProtoResets((r) => ({ ...r, [o.id]: (r[o.id] ?? 0) + 1 }))}
+                    onHover={(on) => selectable && setHovered(on ? o.id : null)}
+                  />
+                ))}
+              </div>
+              {/* "They all feel equal" is an answer like any other, so it lives
+                  with them — it just has no media of its own to sit on. */}
+              {selectable && opts.length >= 2 && (
+                <div className="mt-4">
+                  <ChoiceRow
+                    label={opts.length === 2 ? 'Both feel equal' : 'They all feel equal'}
+                    selected={picked === 'tie'}
+                    disabled={hasVoted || busy}
+                    onSelect={() => setChoices((c) => ({ ...c, [page.id]: 'tie' }))}
+                    // A tie is about all of them, so it lifts nothing in particular.
+                    onHover={() => setHovered(null)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+    )
+  }
+
   return (
     // Vertically center the content: my-auto centers it when short, and collapses
     // to top-aligned + scrollable when the content is taller than the viewport.
@@ -306,107 +525,12 @@ export default function VoterPage() {
         </>
       )}
 
-      {/* ------------------------------- Vote ------------------------------- */}
-      {(phase === 'vote' || phase === 'submitting') && (
-        <>
-          <div className="mt-6 space-y-12">
-            {full.pages.map((page) => {
-              const opts = voteOptions[page.id] ?? []
-              const wids = full.widgets.filter((w) => w.page_id === page.id).sort((a, b) => a.order_index - b.order_index)
-              return (
-                <section key={page.id} id={`page-${page.id}`} className="scroll-mt-6 space-y-5">
-                  {(page.title || page.body) && (
-                    <div>
-                      {page.title && <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">{page.title}</h2>}
-                      {page.body && <p className="mt-1.5 max-w-xl text-[15px] leading-relaxed text-muted">{page.body}</p>}
-                    </div>
-                  )}
-
-                  {page.type === 'feedback' ? (
-                    <>
-                      {opts.length > 0 && (
-                        <div className="space-y-4 rounded-[26px] border border-line bg-card p-4 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)]">
-                          <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${opts.length === 3 ? 'lg:grid-cols-3' : ''}`}>
-                            {opts.map((o) => {
-                              const selected = choices[page.id] === o.id
-                              return (
-                                <div key={o.id} className={`flex flex-col overflow-hidden rounded-2xl border bg-card transition ${selected ? 'border-ink' : 'border-line'}`}>
-                                  <div className="flex items-center justify-between border-b border-line px-5 py-3">
-                                    <span className="text-[15px] font-semibold tracking-tight">{o.name}</span>
-                                    {o.embed_url && o.embed_type !== 'image' ? (
-                                      <button type="button" onClick={() => setProtoResets((r) => ({ ...r, [o.id]: (r[o.id] ?? 0) + 1 }))} className="inline-flex items-center gap-1 rounded-[12px] border border-line-strong px-2.5 py-1 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink">
-                                        <span aria-hidden="true">↻</span> Reset
-                                      </button>
-                                    ) : (
-                                      <span className="text-[13px] text-muted">try it ↓</span>
-                                    )}
-                                  </div>
-                                  {o.description && <p className="border-b border-line px-5 py-2.5 text-[14px] text-muted">{o.description}</p>}
-                                  {/* Media keeps its own aspect ratio, so options
-                                      in a row can differ in height; the grid
-                                      stretches every card to the tallest and
-                                      this cell centres its media in what's left. */}
-                                  <div className="flex flex-1 items-center justify-center px-5 py-6">
-                                    <ZoomableMedia media={optionMedia(o)} embedKey={protoResets[o.id] ?? 0} />
-                                  </div>
-                                  <div className="mt-auto border-t border-line p-3">
-                                    <button type="button" onClick={() => setChoices((c) => ({ ...c, [page.id]: o.id }))} disabled={hasVoted} className={`w-full rounded-[16px] py-2 text-[14px] font-semibold text-ink transition disabled:cursor-not-allowed ${selected ? 'border border-transparent bg-black/[0.06]' : 'border border-line-strong hover:bg-black/[0.03]'}`}>
-                                      {selected ? `✓ ${o.name} selected` : `Select ${o.name}`}
-                                    </button>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                          {opts.length >= 2 && (
-                            <button type="button" onClick={() => setChoices((c) => ({ ...c, [page.id]: 'tie' }))} disabled={hasVoted} className={`w-full rounded-[16px] border py-2.5 text-[14px] font-semibold text-ink transition disabled:cursor-not-allowed ${choices[page.id] === 'tie' ? 'border-transparent bg-black/[0.06]' : 'border-line-strong hover:bg-black/[0.03]'}`}>
-                              {choices[page.id] === 'tie' ? '✓ They all feel equal' : opts.length === 2 ? 'Both feel equal' : 'They all feel equal'}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {wids.map((w) => (
-                        <div key={w.id} className="rounded-[26px] border border-line bg-card p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] sm:p-6">
-                          <WidgetInput widget={w} value={answers[w.id]} onChange={(v) => setAnswers((a) => ({ ...a, [w.id]: v }))} hideLabel={w.config.showTitle === false} />
-                        </div>
-                      ))}
-                    </>
-                  ) : (
-                    // Static page — media shown for context, not selectable.
-                    <div className={`grid grid-cols-1 gap-4 ${opts.length >= 2 ? 'sm:grid-cols-2' : ''}`}>
-                      {opts.map((o) => (
-                        <div key={o.id} className="overflow-hidden rounded-[26px] border border-line bg-card shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)]">
-                          {/* No name/description header: a static page shows the
-                              media alone, and the builder hides those editors for
-                              it. Rendering them would surface the "Option A"
-                              defaults a page carries over when it's switched
-                              from feedback to static. */}
-                          <div className="flex h-full items-center justify-center px-5 py-6">
-                            <ZoomableMedia media={optionMedia(o)} />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              )
-            })}
-          </div>
-
-          {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-
-          <button type="button" onClick={submit} disabled={phase === 'submitting' || hasVoted} className="mt-8 ml-auto block w-fit rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
-            {phase === 'submitting' ? 'Submitting…' : 'Submit'}
-          </button>
-        </>
-      )}
-
       {/* ----------------------------- Thank you ---------------------------- */}
       {phase === 'done' && (
         <ThankYou
           form={full}
           results={form.show_results_to_voters ? results : null}
-          chosenIds={new Set(Object.values(choices))}
+          choices={choices}
           preview={preview}
           returning={alreadyVoted}
           onRestart={restart}
@@ -425,7 +549,7 @@ export default function VoterPage() {
 function ThankYou({
   form,
   results,
-  chosenIds,
+  choices,
   preview,
   returning,
   onRestart,
@@ -433,7 +557,8 @@ function ThankYou({
 }: {
   form: FullForm
   results: FormResults | null
-  chosenIds: Set<string>
+  /** This voter's picks, page id → option id (or 'tie') — the "Your choice" tab. */
+  choices: Record<string, string>
   preview: boolean
   /** Arrived already having responded, rather than having just submitted. */
   returning: boolean
@@ -443,21 +568,32 @@ function ThankYou({
   return (
     <EndScreen
       headline={
-        returning ? 'You\u2019ve already responded' : form.form.thank_you_message ? 'Thanks!' : "Thanks \u2014 your feedback's in."
+        preview
+          ? 'End screen preview'
+          : returning
+            ? 'You\u2019ve already responded'
+            : form.form.thank_you_message
+              ? 'Thanks!'
+              : "Thanks \u2014 your feedback's in."
       }
       message={
-        returning
-          ? // Say where the limit comes from, so it reads as a rule rather than a
-            // glitch — and so someone who genuinely needs to redo it knows how.
-            VOTING_REQUIRES_LOGIN
-            ? 'This form takes one response per person, and yours has already been counted.'
-            : 'This form takes one response per browser, and this one has already been counted.'
-          : form.form.thank_you_message
+        preview
+          ? // Said at the moment a creator would otherwise assume it counted.
+            // Everything up to here behaves like the real thing, so the one place
+            // it deliberately doesn't is worth stating outright.
+            'Nothing was recorded — previews never count towards your responses.'
+          : returning
+            ? // Say where the limit comes from, so it reads as a rule rather than a
+              // glitch — and so someone who genuinely needs to redo it knows how.
+              VOTING_REQUIRES_LOGIN
+              ? 'This form takes one response per person, and yours has already been counted.'
+              : 'This form takes one response per browser, and this one has already been counted.'
+            : form.form.thank_you_message
       }
       results={results}
       pages={form.pages}
       options={form.options}
-      chosenIds={chosenIds}
+      choices={choices}
       onUpvote={onUpvote}
     >
       {preview && (
@@ -466,10 +602,164 @@ function ThankYou({
           onClick={onRestart}
           className="mt-6 inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
         >
-          <span aria-hidden="true">↻</span> Start over
+          <ArrowClockwise size={15} aria-hidden="true" /> Start over
         </button>
       )}
     </EndScreen>
+  )
+}
+
+/**
+ * The answer that has no media of its own — "Both feel equal".
+ *
+ * A full-width row under the media grid rather than a fourth card: there is
+ * nothing to show for it, and an empty card sitting beside real screens reads
+ * as a missing image.
+ */
+function ChoiceRow({
+  label,
+  selected,
+  disabled,
+  onSelect,
+  onHover,
+}: {
+  label: string
+  selected: boolean
+  disabled?: boolean
+  onSelect: () => void
+  onHover: (on: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={disabled}
+      aria-pressed={selected}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      // Focus counts as hover: the link between an answer and the media it
+      // refers to is the whole point of the layout, and a keyboard should get it.
+      onFocus={() => onHover(true)}
+      onBlur={() => onHover(false)}
+      className={`flex w-full items-center justify-center gap-1.5 rounded-[16px] border bg-card px-4 py-3.5 text-[15px] font-medium transition disabled:cursor-not-allowed ${
+        selected ? 'border-ink bg-ink text-white' : 'border-line text-ink hover:border-ink/40'
+      }`}
+    >
+      {selected && <Check size={16} weight="bold" aria-hidden="true" />}
+      {label}
+    </button>
+  )
+}
+
+/**
+ * One option's media in the right-hand column.
+ *
+ * Dims to let its sibling stand out while that sibling is hovered on the left,
+ * so pointing at an answer answers "which one is that again?" without a click.
+ * The card keeps its own hover wired to the same state, so the highlight works
+ * from either side.
+ */
+function MediaCell({
+  option,
+  badge,
+  labelled,
+  dimmed,
+  lifted,
+  selected = false,
+  onSelect,
+  disabled,
+  resetKey,
+  onReset,
+  onHover,
+}: {
+  option: Option
+  badge: string
+  /** False on a context page, where the media is shown but not chosen between. */
+  labelled: boolean
+  dimmed: boolean
+  lifted: boolean
+  selected?: boolean
+  /** Undefined on a context page — there is nothing to choose. */
+  onSelect?: () => void
+  disabled?: boolean
+  resetKey: number
+  onReset: () => void
+  onHover: (on: boolean) => void
+}) {
+  const isPrototype = Boolean(option.embed_url) && option.embed_type !== 'image'
+  return (
+    <div
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      className={`flex min-h-0 flex-col overflow-hidden rounded-[20px] border bg-card transition duration-200 ${
+        dimmed ? 'opacity-35' : 'opacity-100'
+      } ${
+        lifted || selected
+          ? 'border-ink shadow-[0_2px_10px_-2px_rgba(0,0,0,0.10),0_18px_44px_-20px_rgba(0,0,0,0.30)]'
+          : 'border-line'
+      }`}
+    >
+      {labelled && (
+        <div className="flex flex-none items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              className={`grid h-6 w-6 flex-none place-items-center rounded-md text-[12px] font-semibold transition ${
+                lifted || selected ? 'bg-ink text-white' : 'bg-black/[0.06] text-muted'
+              }`}
+              aria-hidden="true"
+            >
+              {badge}
+            </span>
+            <span className="line-clamp-2 text-[15px] font-semibold leading-snug tracking-tight">{option.name}</span>
+          </span>
+          {isPrototype ? (
+            <button
+              type="button"
+              onClick={onReset}
+              className="inline-flex flex-none items-center gap-1 rounded-[12px] border border-line-strong px-2.5 py-1 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink"
+            >
+              <ArrowClockwise size={13} aria-hidden="true" /> Reset
+            </button>
+          ) : (
+            <span className="inline-flex flex-none items-center gap-1 whitespace-nowrap text-[13px] text-muted">
+              tap to zoom <ArrowDown size={12} aria-hidden="true" />
+            </span>
+          )}
+        </div>
+      )}
+      {/* Only on a page that is actually being chosen between. A context page
+          keeps whatever names and descriptions it had as a comparison, so a page
+          switched from Get Vote would otherwise surface stale "Option A" copy. */}
+      {labelled && option.description && (
+        <p className="flex-none border-b border-line px-4 py-2.5 text-[14px] text-muted">{option.description}</p>
+      )}
+      <div className="flex flex-1 items-center justify-center p-4">
+        <ZoomableMedia media={optionMedia(option)} embedKey={resetKey} />
+      </div>
+      {/* The answer sits on the thing it answers about. Its own control rather
+          than the whole card: the media above it is clickable in its own right —
+          tapping it zooms — and one rectangle cannot mean two things. */}
+      {onSelect && (
+        <div className="mt-auto flex-none border-t border-line p-3">
+          <button
+            type="button"
+            onClick={onSelect}
+            disabled={disabled}
+            aria-pressed={selected}
+            onFocus={() => onHover(true)}
+            onBlur={() => onHover(false)}
+            className={`flex w-full items-center justify-center gap-1.5 rounded-[14px] py-2.5 text-[14px] font-semibold transition disabled:cursor-not-allowed ${
+              selected
+                ? 'bg-ink text-white'
+                : 'border border-line-strong text-ink hover:border-ink/40 hover:bg-black/[0.03]'
+            }`}
+          >
+            {selected && <Check size={15} weight="bold" aria-hidden="true" />}
+            {selected ? 'Selected' : 'Select this one'}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -485,7 +775,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function SignInGate({ slug }: { slug: string }) {
   return (
     <Centered>
-      <h1 className="text-xl font-semibold">Sign in to respond</h1>
+      <h1 className="font-sans text-xl font-semibold">Sign in to respond</h1>
       <p className="mt-2 text-[15px] leading-relaxed text-muted">
         Responses are one per person, so this form needs your{' '}
         <span className="font-medium text-ink">{ALLOWED_EMAIL_DOMAIN}</span> account. You&rsquo;ll come

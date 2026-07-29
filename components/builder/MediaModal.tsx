@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { EmbedType } from '@/lib/types'
 import { inferEmbedType, hostnameOf, isAllowedEmbedUrl, EMBED_TYPE_LABEL } from '@/lib/embed'
 import { uploadAsset } from '@/lib/assets'
+import { CircleNotch, UploadSimple, X } from '@phosphor-icons/react'
 import MediaEmbed from '@/components/MediaEmbed'
 
 const MAX_BYTES = 15 * 1024 * 1024
@@ -185,7 +186,7 @@ export default function MediaModal({
         }}
       >
         <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <h2 id={titleId} className="text-[17px] font-semibold tracking-tight">
+          <h2 id={titleId} className="font-sans text-[17px] font-semibold tracking-tight">
             {imageOnly ? 'Hero image' : 'Media'}
           </h2>
           <button
@@ -194,9 +195,7 @@ export default function MediaModal({
             aria-label="Close"
             className="u-circle grid h-8 w-8 place-items-center rounded-full text-muted transition hover:bg-black/[0.05] hover:text-ink"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
 
@@ -281,15 +280,7 @@ export default function MediaModal({
               {busy ? (
                 <Spinner />
               ) : (
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="text-muted">
-                  <path
-                    d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
+                <UploadSimple size={22} className="text-muted" aria-hidden="true" />
               )}
               <span className="mt-2.5 text-[15px] font-medium">
                 {busy ? 'Uploading…' : 'Drop a file, or click to browse'}
@@ -372,15 +363,7 @@ export default function MediaModal({
         {dragging && (
           <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-[26px] bg-card/85 backdrop-blur-[2px]">
             <div className="flex flex-col items-center rounded-2xl border-2 border-dashed border-ink px-8 py-6">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <UploadSimple size={24} aria-hidden="true" />
               <p className="mt-2 text-[15px] font-medium">Drop to upload</p>
               <p className="mt-0.5 text-[13px] text-muted">{formats}</p>
             </div>
@@ -392,10 +375,5 @@ export default function MediaModal({
 }
 
 function Spinner() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="animate-spin text-muted">
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
+  return <CircleNotch size={22} className="animate-spin text-muted" aria-hidden="true" />
 }

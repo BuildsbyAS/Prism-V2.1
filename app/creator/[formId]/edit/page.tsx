@@ -6,6 +6,7 @@ import Link from 'next/link'
 import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
 import { getFullForm, saveFullForm, isStorageFull } from '@/lib/store'
 import {
+  hasResults,
   newPage,
   newOption,
   newWidget,
@@ -23,9 +24,12 @@ import {
   MAX_WIDGETS,
   type Selection,
 } from '@/lib/builder'
+import type { Icon as PhosphorIcon } from '@phosphor-icons/react'
+import { ArrowCounterClockwise, ArrowLeft, CopySimple, DotsSixVertical, FlagCheckered, Plus, Sparkle, Trash } from '@phosphor-icons/react'
 import HoverHighlight from '@/components/HoverHighlight'
 import Tooltip from '@/components/Tooltip'
 import ConfirmDialog from '@/components/ConfirmDialog'
+import StatusBadge from '@/components/StatusBadge'
 import MobileFormView from '@/components/builder/MobileFormView'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { WelcomeCenter, PageCenter } from '@/components/builder/panes'
@@ -80,6 +84,8 @@ export default function BuilderPage() {
   const [flashInputs, setFlashInputs] = useState(false)
   // The input card the canvas has just scrolled to, pulsed for a beat on arrival.
   const [flashWidget, setFlashWidget] = useState<string | null>(null)
+  // Same, for the option settings the properties column has just scrolled to.
+  const [flashOption, setFlashOption] = useState<string | null>(null)
   // The page a confirmation is open for, and what it's about to do to it.
   const [pageAction, setPageAction] = useState<{ id: string; kind: 'delete' | 'clear' } | null>(null)
   const [nudgeDismissed, setNudgeDismissed] = useState(false)
@@ -95,7 +101,10 @@ export default function BuilderPage() {
 
   const loadedRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The edit the debounce still owes storage — see the unmount flush below. */
+  const pending = useRef<{ form: Form; pages: Page[]; options: Option[]; widgets: Widget[] } | null>(null)
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const optionFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
    * A closed form is a record, not a draft. The builder still opens — the
@@ -156,6 +165,31 @@ export default function BuilderPage() {
     }, 0)
   }, [])
 
+  /**
+   * Select an option and make sure its settings are on screen.
+   *
+   * They render *below* the page's own properties, so on a Get Vote page — page
+   * type, the inputs list, delete — the option's section routinely lands past
+   * the fold of the properties column. Clicking Edit on a card then looked like
+   * nothing happened at all. Same rule as the canvas: only when it's out of
+   * view, so clicking an option whose settings are already visible is quiet.
+   */
+  const revealOption = useCallback((key: string) => {
+    setSel({ kind: 'option', key })
+    setTimeout(() => {
+      const el = document.querySelector<HTMLElement>('[data-option-panel]')
+      const panel = el?.closest('aside')
+      if (!el || !panel) return
+      const r = el.getBoundingClientRect()
+      const p = panel.getBoundingClientRect()
+      if (r.top >= p.top && r.bottom <= p.bottom) return
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      setFlashOption(key)
+      if (optionFlashTimer.current) clearTimeout(optionFlashTimer.current)
+      optionFlashTimer.current = setTimeout(() => setFlashOption(null), 1000)
+    }, 0)
+  }, [])
+
   /** Select an input from the properties rail, and scroll the canvas to it. */
   const revealInput = useCallback(
     (key: string) => {
@@ -168,6 +202,7 @@ export default function BuilderPage() {
   useEffect(
     () => () => {
       if (flashTimer.current) clearTimeout(flashTimer.current)
+      if (optionFlashTimer.current) clearTimeout(optionFlashTimer.current)
     },
     [],
   )
@@ -210,12 +245,33 @@ export default function BuilderPage() {
       loadedRef.current = true
       return
     }
+    pending.current = { form, pages, options, widgets }
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => void persist(form, pages, options, widgets), 700)
+    saveTimer.current = setTimeout(() => {
+      pending.current = null
+      void persist(form, pages, options, widgets)
+    }, 700)
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
   }, [form, pages, options, widgets, persist, locked])
+
+  /**
+   * Write whatever the debounce still owes on the way out.
+   *
+   * The cleanup above clears the pending timer, and it runs on unmount as well
+   * as on every change — so leaving the builder inside those 700ms discarded
+   * the edit outright. Publishing and going straight back to the dashboard was
+   * the worst version: the form came back a draft, with nothing to say why.
+   */
+  useEffect(
+    () => () => {
+      const owed = pending.current
+      pending.current = null
+      if (owed) void persist(owed.form, owed.pages, owed.options, owed.widgets)
+    },
+    [persist],
+  )
 
   const patchForm = useCallback((p: Partial<Form>) => {
     if (locked) return
@@ -379,11 +435,28 @@ export default function BuilderPage() {
     const next: Form = { ...form, status: 'open', published_at: new Date().toISOString() }
     setForm(next)
     setPublishedSnapshot(snapshot(next, pages, options, widgets))
+    void writeNow(next)
   }
   function unpublish() {
     if (locked) return
-    patchForm({ status: 'draft' })
+    if (!form) return
+    const next: Form = { ...form, status: 'draft' }
+    setForm(next)
     setPublishedSnapshot(null)
+    void writeNow(next)
+  }
+
+  /**
+   * Persist a status change immediately instead of leaving it to the debounce.
+   *
+   * Going live is a decision, not a keystroke: waiting 700ms to write it meant
+   * the next navigation cancelled the timer and the form quietly stayed a
+   * draft — the publish looked like it had done nothing at all.
+   */
+  async function writeNow(next: Form) {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    pending.current = null
+    await persist(next, pages, options, widgets)
   }
 
   /**
@@ -402,8 +475,8 @@ export default function BuilderPage() {
       <>
         <FormHeader formId={formId} tab="edit" />
         <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
-          <h1 className="text-xl font-semibold">Form not found</h1>
-          <Link href="/creator" className="mt-5 inline-block rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white">← Back to forms</Link>
+          <h1 className="font-sans text-xl font-semibold">Form not found</h1>
+          <Link href="/creator" className="mt-5 inline-flex items-center gap-1.5 rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white"><ArrowLeft size={14} aria-hidden="true" /> Back to forms</Link>
         </main>
       </>
     )
@@ -461,25 +534,15 @@ export default function BuilderPage() {
   const publishLabel = !published ? 'Publish form' : dirty ? 'Publish changes' : 'Published'
 
   const blocker = publishBlocker(ready, pages)
-  // Only blocked before the first publish. Once a form is live this button is
-  // also the way to its share link and to unpublishing, so disabling it would
-  // trap a published form whose last Get Vote page was switched to Set Context.
-  // That case is caught inside the dialog instead, where the checklist can say
-  // which item is missing.
-  const publishBlocked = Boolean(blocker) && !published
-  // aria-disabled, not disabled: browsers don't dispatch hover events to a
-  // disabled control and skip it in the tab order, so the tooltip explaining
-  // *why* it's blocked would be unreachable by mouse and keyboard alike.
+  // Always opens. It used to swallow the click while the form was incomplete,
+  // which left the one place that can say *what* is missing — the dialog, which
+  // marks each empty required field — unreachable from the only button that
+  // leads there. The dialog does the gating now; this just gets you to it.
   const publishButton = (
     <button
       type="button"
-      aria-disabled={publishBlocked}
-      onClick={() => {
-        if (!publishBlocked) setShareOpen(true)
-      }}
-      className={`rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition ${
-        publishBlocked ? 'cursor-not-allowed opacity-40' : 'hover:opacity-90'
-      }`}
+      onClick={() => setShareOpen(true)}
+      className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90"
     >
       {publishLabel}
     </button>
@@ -534,6 +597,7 @@ export default function BuilderPage() {
       <FormHeader
         formId={formId}
         tab="edit"
+        canSeeResults={hasResults(form)}
         // Renames the form, not the welcome headline it starts out showing.
         // Without a handler the name renders as plain text, which is what a
         // closed form wants.
@@ -543,13 +607,16 @@ export default function BuilderPage() {
         // introduction every time.
         previewQuery={`?start=${encodeURIComponent(activeScreen)}`}
         beforeLeave={flushSave}
+        // Draft / Active / Closed, the same badge the Preview and Results views
+        // wear. It used to appear only on a closed form, so the one state you
+        // could read off the editor was the one you couldn't do anything about.
+        // A closed form keeps its "read-only" note beside it — that's about this
+        // view, not about the form.
         status={
-          locked && (
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-closed-bg px-2.5 py-1 text-[13px] font-medium text-closed">
-              <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              Closed · read-only
-            </span>
-          )
+          <span className="flex shrink-0 items-center gap-2">
+            <StatusBadge status={form.status} />
+            {locked && <span className="text-[13px] text-muted">read-only</span>}
+          </span>
         }
       >
         {/* Save status first, then the actions — status is a passive note, so
@@ -575,7 +642,9 @@ export default function BuilderPage() {
         <div className="hidden md:block">
           <DeviceSwitch value={device} onChange={setDevice} />
         </div>
-        {locked ? null : publishBlocked ? <Tooltip label={blocker!}>{publishButton}</Tooltip> : publishButton}
+        {/* The tooltip still previews the blocker on hover; the click goes
+            through either way, and the dialog repeats it beside its button. */}
+        {locked ? null : blocker && !published ? <Tooltip label={blocker}>{publishButton}</Tooltip> : publishButton}
       </FormHeader>
 
       {/* --rail and --panel are the two draggable columns (see PanelResizer).
@@ -590,7 +659,7 @@ export default function BuilderPage() {
           The properties column goes entirely — every control in it edits, so
           on a closed form it would be a panel of dead switches. */}
       <div
-        className="relative grid w-full grid-cols-1 md:h-[calc(100dvh-3.5rem)] md:grid-cols-[var(--rail)_1fr] md:data-[panel=on]:grid-cols-[var(--rail)_1fr_var(--panel)]"
+        className="u-view relative grid w-full grid-cols-1 md:h-[calc(100dvh-3.5rem)] md:grid-cols-[var(--rail)_1fr] md:data-[panel=on]:grid-cols-[var(--rail)_1fr_var(--panel)]"
         data-panel={locked ? 'off' : 'on'}
         style={{ '--rail': `${rail.width}px`, '--panel': `${panel.width}px` } as React.CSSProperties}
       >
@@ -606,7 +675,7 @@ export default function BuilderPage() {
             pages outgrow the column. */}
         <aside className="flex flex-col gap-2 border-b border-line p-2 md:h-full md:min-h-0 md:border-b-0 md:border-r">
           <HoverHighlight className="flex min-h-0 flex-1 flex-col gap-2">
-            <RailRow active={activeScreen === 'welcome'} onClick={() => goToScreen('welcome')} icon="✦" label="Introduction" done={ready.welcome} />
+            <RailRow active={activeScreen === 'welcome'} onClick={() => goToScreen('welcome')} icon={Sparkle} label="Introduction" done={ready.welcome} />
 
             <div className="flex min-h-0 flex-col rounded-2xl bg-black/[0.05] p-1.5">
               {/* The list is not `flex-1`: Add content belongs directly under the
@@ -619,7 +688,7 @@ export default function BuilderPage() {
                     key={p.id}
                     index={i}
                     active={currentPageId === p.id}
-                    icon={PAGE_META[p.type].glyph}
+                    icon={PAGE_META[p.type].icon}
                     label={p.title || PAGE_META[p.type].label}
                     done={pageReady(p, options, widgets)}
                     onClick={() => goToScreen(p.id)}
@@ -641,7 +710,7 @@ export default function BuilderPage() {
               {!locked && <AddPage onAdd={() => addPage('feedback')} />}
             </div>
 
-            <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon="✓" label="End screen" done={ready.thankyou} />
+            <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon={FlagCheckered} label="End screen" done={ready.thankyou} />
           </HoverHighlight>
         </aside>
 
@@ -685,7 +754,7 @@ export default function BuilderPage() {
                     selectedInputKey={sel.kind === 'input' ? sel.key : null}
                     flashInputKey={flashWidget}
                     onPageChange={(p) => patchPage(screen.page!.id, p)}
-                    onSelectOption={(key) => setSel({ kind: 'option', key })}
+                    onSelectOption={revealOption}
                     onSelectInput={(key) => setSel({ kind: 'input', key })}
                     onAddOption={() => addOption(screen.page!.id)}
                     onDeleteOption={removeOption}
@@ -763,6 +832,7 @@ export default function BuilderPage() {
                 <OptionProperties
                   option={selectedOption}
                   heading={selectedOption.name || 'Selected media'}
+                  flash={flashOption === selectedOption.id}
                   onChange={(p) => patchOption(selectedOption.id, p)}
                   onDelete={() => removeOption(selectedOption.id)}
                   onOpenMedia={() => setMediaFor(selectedOption.id)}
@@ -829,10 +899,12 @@ function tileClass(done?: boolean): string {
   }`
 }
 
-function RailRow({ active, onClick, icon, label, done }: { active: boolean; onClick: () => void; icon: string; label: string; done?: boolean }) {
+function RailRow({ active, onClick, icon: Icon, label, done }: { active: boolean; onClick: () => void; icon: PhosphorIcon; label: string; done?: boolean }) {
   return (
     <button type="button" onClick={onClick} data-hl className={`relative flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition ${active ? 'bg-black/[0.06]' : ''}`}>
-      <span className={tileClass(done)}>{icon}</span>
+      <span className={tileClass(done)}>
+        <Icon size={13} aria-hidden="true" />
+      </span>
       <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
     </button>
   )
@@ -841,7 +913,7 @@ function RailRow({ active, onClick, icon, label, done }: { active: boolean; onCl
 function PageRow({
   index,
   active,
-  icon,
+  icon: Icon,
   label,
   done,
   onClick,
@@ -854,7 +926,7 @@ function PageRow({
 }: {
   index: number
   active: boolean
-  icon: string
+  icon: PhosphorIcon
   label: string
   done: boolean
   onClick: () => void
@@ -892,21 +964,23 @@ function PageRow({
     >
       {readOnly ? (
         // Keeps the title aligned with the editable rows above and below it.
-        <span className="flex-none px-1 text-[12px] text-transparent" aria-hidden="true">
-          ⠿
+        <span className="flex-none px-1 text-transparent" aria-hidden="true">
+          <DotsSixVertical size={12} />
         </span>
       ) : (
         <span
           draggable
           onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
           aria-label="Drag to reorder"
-          className="flex-none cursor-grab px-1 text-[12px] text-muted opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
+          className="flex-none cursor-grab px-1 text-muted opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
         >
-          ⠿
+          <DotsSixVertical size={12} aria-hidden="true" />
         </span>
       )}
       <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-        <span className={tileClass(done)}>{icon}</span>
+        <span className={tileClass(done)}>
+          <Icon size={13} aria-hidden="true" />
+        </span>
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
       </button>
       {/* Hidden until hover, so the row's width is spent on the title. */}
@@ -914,7 +988,7 @@ function PageRow({
       <div className="flex flex-none items-center opacity-0 transition group-hover:opacity-100">
         <Tooltip label="Duplicate">
           <button type="button" onClick={onDuplicate} aria-label="Duplicate" className="grid h-5 w-5 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-ink">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.7" /><path d="M4 16V6a2 2 0 0 1 2-2h10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+            <CopySimple size={13} aria-hidden="true" />
           </button>
         </Tooltip>
         {/* Same slot, different job on the last page: a reset arrow rather than a
@@ -928,9 +1002,9 @@ function PageRow({
             className="grid h-5 w-5 place-items-center rounded-md text-muted transition hover:bg-black/[0.06] hover:text-red-600 disabled:pointer-events-none disabled:opacity-30"
           >
             {clearOnly ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <ArrowCounterClockwise size={13} aria-hidden="true" />
             ) : (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <Trash size={13} aria-hidden="true" />
             )}
           </button>
         </Tooltip>
@@ -957,7 +1031,7 @@ function AddPage({ onAdd }: { onAdd: () => void }) {
         onClick={onAdd}
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-line-strong py-1.5 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink"
       >
-        <span className="text-base leading-none">+</span> Add content
+        <Plus size={14} aria-hidden="true" /> Add content
       </button>
     </div>
   )

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import { CaretRight } from '@phosphor-icons/react'
 import Tooltip from '@/components/Tooltip'
 import FormViewTabs, { type FormTab } from '@/components/FormViewTabs'
 
@@ -22,6 +23,7 @@ export default function FormHeader({
   name,
   onRename,
   canEdit = true,
+  canSeeResults = true,
   /** Ran before a tab navigates away — the editor flushes its pending save. */
   beforeLeave,
   /** Query appended to the Preview tab, so it opens on the screen you're editing. */
@@ -35,6 +37,8 @@ export default function FormHeader({
   name?: string | null
   onRename?: (v: string) => void
   canEdit?: boolean
+  /** False for a form that has never been published — see hasResults. */
+  canSeeResults?: boolean
   beforeLeave?: () => Promise<void> | void
   previewQuery?: string
   status?: React.ReactNode
@@ -57,6 +61,7 @@ export default function FormHeader({
             formId={formId}
             active={tab}
             canEdit={canEdit}
+            canSeeResults={canSeeResults}
             previewQuery={previewQuery}
             beforeLeave={beforeLeave}
           />
@@ -113,7 +118,7 @@ function Breadcrumb({ title, onRename }: { title?: string | null; onRename?: (v:
       </Link>
       {title !== undefined && (
         <>
-          <span className="flex-none text-muted">›</span>
+          <CaretRight size={12} aria-hidden="true" className="flex-none text-muted" />
           {/* Only worth a tooltip when something is actually hidden. */}
           {clipped ? (
             <Tooltip label={shown} side="bottom" className="min-w-0">

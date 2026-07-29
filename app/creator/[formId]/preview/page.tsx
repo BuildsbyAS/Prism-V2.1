@@ -6,7 +6,8 @@ import Link from 'next/link'
 import type { FullForm } from '@/lib/types'
 import { getFullForm, DEMO_STORAGE_KEY } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
-import { formName } from '@/lib/builder'
+import { formName, hasResults } from '@/lib/builder'
+import { ArrowLeft } from '@phosphor-icons/react'
 import StatusBadge from '@/components/StatusBadge'
 import FormHeader from '@/components/builder/FormHeader'
 import DeviceSwitch, { type Device } from '@/components/builder/DeviceSwitch'
@@ -89,12 +90,12 @@ export default function FormPreviewPage() {
       <>
         <FormHeader formId={formId} tab="preview" canEdit={false} />
         <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
-          <h1 className="text-xl font-semibold">Form not found</h1>
+          <h1 className="font-sans text-xl font-semibold">Form not found</h1>
           <Link
             href="/creator/team"
             className="mt-5 inline-block rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white"
           >
-            ← Back to team
+            <ArrowLeft size={14} aria-hidden="true" /> Back to team
           </Link>
         </main>
       </>
@@ -108,12 +109,13 @@ export default function FormPreviewPage() {
         tab="preview"
         name={full ? formName(full.form) : null}
         canEdit={canEdit}
+        canSeeResults={!full || hasResults(full.form)}
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       >
         <DeviceSwitch value={device} onChange={setDevice} />
       </FormHeader>
 
-      <main className="flex h-[calc(100dvh-3.5rem)] justify-center overflow-hidden bg-black/[0.04] p-6">
+      <main className="u-view flex h-[calc(100dvh-3.5rem)] justify-center overflow-hidden bg-black/[0.04] p-6">
         {full ? (
           <div
             className={`h-full overflow-hidden bg-white transition-[width] duration-300 ease-out ${

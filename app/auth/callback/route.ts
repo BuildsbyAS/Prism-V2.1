@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getServerSupabase } from '@/lib/supabase-server'
 import { isAllowedEmail } from '@/lib/supabase'
+import { HOME_AFTER_SIGN_IN } from '@/lib/routes'
 
 /**
  * OAuth / email-confirmation return point. Exchanges the code for a session,
@@ -9,7 +10,7 @@ import { isAllowedEmail } from '@/lib/supabase'
  */
 /** Only same-site paths are honoured — see the note in the login page. */
 function safeNext(next: string | null): string {
-  if (!next || !next.startsWith('/') || next.startsWith('//')) return '/creator'
+  if (!next || !next.startsWith('/') || next.startsWith('//')) return HOME_AFTER_SIGN_IN
   return next
 }
 

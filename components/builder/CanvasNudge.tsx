@@ -1,5 +1,7 @@
 'use client'
 
+import { Check, X } from '@phosphor-icons/react'
+
 /**
  * A prompt that rises from the bottom of the canvas once a screen is finished,
  * pointing at whatever comes next.
@@ -32,8 +34,8 @@ export default function CanvasNudge({
     // clicks on the card it overlaps; the panel itself takes them back.
     <div className="pointer-events-none sticky bottom-0 z-20 flex justify-center pt-6">
       <div className="u-rise pointer-events-auto mb-1 flex w-full max-w-[540px] items-center gap-3 rounded-[20px] border border-line bg-card px-4 py-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08),0_20px_48px_-16px_rgba(0,0,0,0.28)]">
-        <span className="grid h-8 w-8 flex-none place-items-center rounded-full bg-ink text-[15px] font-semibold text-white" aria-hidden="true">
-          ✓
+        <span className="grid h-8 w-8 flex-none place-items-center rounded-full bg-ink text-white" aria-hidden="true">
+          <Check size={16} weight="bold" />
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[14px] font-semibold tracking-tight">{title}</p>
@@ -52,9 +54,7 @@ export default function CanvasNudge({
           aria-label="Dismiss"
           className="grid h-7 w-7 flex-none place-items-center rounded-full text-muted transition hover:bg-black/[0.05] hover:text-ink"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
+          <X size={14} aria-hidden="true" />
         </button>
       </div>
     </div>

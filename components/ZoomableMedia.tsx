@@ -1,5 +1,7 @@
 'use client'
 
+import { ArrowsOut } from '@phosphor-icons/react'
+
 import { useState } from 'react'
 import MediaEmbed from './MediaEmbed'
 import MediaLightbox, { type LightboxMedia } from './MediaLightbox'
@@ -48,9 +50,7 @@ export default function ZoomableMedia({
         aria-label={label}
         className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg bg-ink/70 text-white opacity-0 transition hover:bg-ink focus-visible:opacity-100 group-hover/zoom:opacity-100 max-sm:opacity-100"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <ArrowsOut size={16} aria-hidden="true" />
       </button>
       {open && <MediaLightbox media={media} onClose={() => setOpen(false)} />}
     </div>
