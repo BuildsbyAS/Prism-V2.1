@@ -285,16 +285,17 @@ export default function VoterPage() {
     )
   }
 
-  // Past its expiry date the form is shut, whatever `status` still says — the
-  // creator set a date so they wouldn't have to come back and close it by hand.
-  // Preview ignores it, so an expired form is still checkable by its creator.
-  if (expired && full.form.expires_at) {
+  // A shared link remains readable after the creator closes it, but it must not
+  // render an apparently live voting flow whose submission will be rejected.
+  // Preview ignores status/expiry so the creator can still inspect every screen.
+  if (!preview && (full.form.status !== 'open' || expired)) {
     return (
       <Centered>
         <h1 className="font-sans text-xl font-semibold">This form has closed</h1>
         <p className="mt-2 text-[15px] text-muted">
-          It stopped taking responses on{' '}
-          {new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.
+          {expired && full.form.expires_at
+            ? `It stopped taking responses on ${new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.`
+            : 'It is no longer taking responses.'}
         </p>
       </Centered>
     )

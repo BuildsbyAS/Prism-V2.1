@@ -158,15 +158,15 @@ function toListItems(
 }
 
 /**
- * Where an entry's title goes: the builder for your own, the live form for
- * someone else's. A closed form you don't own has nowhere to send you.
+ * Where an entry's broad click target goes: the builder for your own, the real
+ * shared form for someone else's.
  *
  * Your own closed form opens its results instead of the builder — it can't be
  * edited any more (see the builder's read-only mode), so what's left to do with
  * it is read what it found.
  *
- * Someone else's goes to the read-only preview, open or closed. That page is
- * also where its results live, behind a tab.
+ * Preview is intentionally absent here: it has its own explicit button. A click
+ * on the artwork, card body, or list row should mean "open what was shared".
  */
 function entryHref(item: ListItem): string {
   if (!item.creator || item.creator.mine) {
@@ -174,7 +174,7 @@ function entryHref(item: ListItem): string {
       ? `/creator/${item.form.id}/results`
       : `/creator/${item.form.id}/edit`
   }
-  return `/creator/${item.form.id}/preview`
+  return `/f/${item.form.slug}`
 }
 
 /** The dashboard body. Both /creator and /creator/team render this — the
