@@ -10,13 +10,16 @@ interface Props {
   widget: Widget
   value: AnswerValue | undefined
   onChange: (value: AnswerValue) => void
+  /** Voice widgets report recording/upload work so the form cannot submit
+   *  before the final asset URL has reached the answer state. */
+  onBusyChange?: (busy: boolean) => void
   // Suppress the question label — used by the builder's inline preview (the label
   // is edited above the input) and when the widget's title is toggled off.
   hideLabel?: boolean
 }
 
 /** Renders a single feedback widget for the voter and reports its value up. */
-export default function WidgetInput({ widget, value, onChange, hideLabel = false }: Props) {
+export default function WidgetInput({ widget, value, onChange, onBusyChange, hideLabel = false }: Props) {
   const { config } = widget
   const label = config.label || defaultLabel(widget)
 
@@ -85,7 +88,11 @@ export default function WidgetInput({ widget, value, onChange, hideLabel = false
       )}
 
       {widget.type === 'voice' && (
-        <VoiceInput value={typeof value === 'string' ? value : ''} onChange={onChange} />
+        <VoiceInput
+          value={typeof value === 'string' ? value : ''}
+          onChange={onChange}
+          onBusyChange={onBusyChange}
+        />
       )}
     </div>
   )
@@ -97,9 +104,17 @@ function fmtTime(s: number): string {
   return `${m}:${String(r).padStart(2, '0')}`
 }
 
-/** Voice feedback — record from the mic, play back, or re-record. The recording
- *  is stored as a base64 data URL (the same shape uploaded media uses). */
-function VoiceInput({ value, onChange }: { value: string; onChange: (v: AnswerValue) => void }) {
+/** Voice feedback — record from the mic, upload it, play it back, or re-record.
+ *  The answer is the uploaded asset URL, so it works on every voter’s device. */
+function VoiceInput({
+  value,
+  onChange,
+  onBusyChange,
+}: {
+  value: string
+  onChange: (v: AnswerValue) => void
+  onBusyChange?: (busy: boolean) => void
+}) {
   const [recording, setRecording] = useState(false)
   const [saving, setSaving] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -141,11 +156,15 @@ function VoiceInput({ value, onChange }: { value: string; onChange: (v: AnswerVa
         uploadAsset(blob, { prefix: 'voice' })
           .then((url) => onChange(url))
           .catch(() => setError('Couldn’t save the recording.'))
-          .finally(() => setSaving(false))
+          .finally(() => {
+            setSaving(false)
+            onBusyChange?.(false)
+          })
       }
       recorder.start()
       recorderRef.current = recorder
       setRecording(true)
+      onBusyChange?.(true)
       setElapsed(0)
       timerRef.current = setInterval(() => {
         setElapsed((s) => {
@@ -154,6 +173,7 @@ function VoiceInput({ value, onChange }: { value: string; onChange: (v: AnswerVa
         })
       }, 1000)
     } catch {
+      onBusyChange?.(false)
       setError('Microphone access was blocked.')
     }
   }

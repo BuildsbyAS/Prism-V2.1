@@ -7,7 +7,7 @@
 // The UI only ever imports from here and never branches on the backend itself.
 
 import { supabase, isSupabaseConfigured } from './supabase'
-import { newPage, newOption, formName } from './builder'
+import { newPage, newOption, formName, neutralChoiceKey } from './builder'
 import type {
   Form,
   FormMode,
@@ -54,6 +54,7 @@ export type ListedForm = Pick<
   | 'hero_image_url'
   | 'hero_bg'
   | 'hero_dither'
+  | 'show_results_to_voters'
 >
 
 export interface TeamForm {
@@ -64,6 +65,8 @@ export interface TeamForm {
   creatorEmail: string
   /** True when the viewer is the creator, so the list can offer Edit/Results. */
   mine: boolean
+  /** True when the signed-in viewer has already submitted this form. */
+  hasResponded: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +242,8 @@ interface TeamRow {
   hero_bg?: string | null
   hero_dither?: boolean | null
   collaborators?: string[] | null
+  show_results_to_voters?: boolean | null
+  viewer_has_responded?: boolean | null
 }
 
 /** Demo mode has no accounts, so a creator id doubles as their address. */
@@ -251,11 +256,10 @@ function demoCreatorEmail(creatorId: string): string {
  * newest first. This is the dashboard's Team tab.
  *
  * In Supabase mode it goes through a `security definer` RPC rather than a query,
- * because RLS deliberately hides all three ingredients: `forms` exposes only
- * open rows to non-owners, `responses` is owner-read, and `auth.users` isn't
- * readable at all. The RPC hands back one aggregate row per form — a tally and
- * an author, never an individual response — and grants no read on the form
- * itself, so a closed form stays closed at /f/[slug].
+ * because RLS deliberately hides two ingredients: `responses` is owner/own-read
+ * and `auth.users` isn't readable at all. The RPC hands back one aggregate row
+ * per form — a tally, author, and the viewer's own submitted/not-submitted bit,
+ * never an individual response.
  */
 export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm[]> {
   if (isSupabaseConfigured && supabase) {
@@ -276,12 +280,14 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         hero_image_url: r.hero_image_url ?? '',
         hero_bg: r.hero_bg ?? 'none',
         hero_dither: r.hero_dither ?? true,
+        show_results_to_voters: r.show_results_to_voters ?? false,
       },
       // count() arrives as a bigint, which PostgREST may serialise as a string.
       responseCount: Number(r.response_count ?? 0),
       lastResponseAt: r.last_response_at,
       creatorEmail: r.creator_email ?? '',
       mine: r.creator_id === viewerId,
+      hasResponded: r.viewer_has_responded ?? false,
     }))
   }
 
@@ -304,6 +310,15 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         lastResponseAt: last,
         creatorEmail: demoCreatorEmail(form.creator_id),
         mine: form.creator_id === viewerId,
+        hasResponded: Boolean(
+          typeof window !== 'undefined' &&
+            window.localStorage.getItem(`prism-session:${form.slug}`) &&
+            rs.some(
+              (response) =>
+                response.voter_session_id ===
+                window.localStorage.getItem(`prism-session:${form.slug}`),
+            ),
+        ),
       }
     })
 }
@@ -656,13 +671,6 @@ export async function submitResponse(
   who: VoterIdentity,
   submitted: SubmittedResponse,
 ): Promise<void> {
-  const responseId = uid()
-  const now = new Date().toISOString()
-
-  // Choices ride on the response row; only real widget answers go to
-  // response_answers (its widget_id is a FK to widgets).
-  const answerRows = Object.entries(submitted.answers).map(([widget_id, value]) => ({ widget_id, value }))
-
   if (isSupabaseConfigured && supabase) {
     // Belt to the RLS policy's braces: the insert would be rejected anyway, but
     // failing here gives the caller a reason it can act on.
@@ -677,27 +685,29 @@ export async function submitResponse(
     if (!target || !acceptsResponses(target as Pick<Form, 'status' | 'expires_at'>)) {
       throw new Error(FORM_NOT_ACCEPTING)
     }
-    const { error } = await supabase.from('responses').insert({
-      id: responseId,
-      form_id: formId,
-      voter_id: who.userId,
-      voter_session_id: who.sessionId,
-      choices: submitted.choices,
+    // The response and every widget answer are written in one database
+    // transaction. A failed answer can no longer leave behind an empty response
+    // that consumes the account's one allowed submission.
+    const { error } = await supabase.rpc('submit_form_response', {
+      p_form_id: formId,
+      p_voter_session_id: who.sessionId,
+      p_choices: submitted.choices,
+      p_answers: submitted.answers,
     })
     // 23505 = unique_violation, i.e. the one-response-per-account index. This is
     // the authoritative check: it also catches two tabs submitting at once,
     // which the pre-check cannot.
     if (error?.code === '23505') throw new Error(ALREADY_RESPONDED)
-    if (error) throw error
-    if (answerRows.length) {
-      const { error: ae } = await supabase
-        .from('response_answers')
-        .insert(answerRows.map((r) => ({ id: uid(), response_id: responseId, ...r })))
-      if (ae) throw ae
+    if (error?.message.includes('Form is not accepting responses')) {
+      throw new Error(FORM_NOT_ACCEPTING)
     }
+    if (error) throw error
     return
   }
 
+  const responseId = uid()
+  const now = new Date().toISOString()
+  const answerRows = Object.entries(submitted.answers).map(([widget_id, value]) => ({ widget_id, value }))
   const db = readDemo()
   // Demo mode has no RLS, so the same rule is enforced here: only a published,
   // unexpired form takes responses.
@@ -774,31 +784,49 @@ export async function getResults(formId: string): Promise<FormResults> {
   const full = await getFullForm(formId)
   const widgets = full?.widgets ?? []
 
-  let responses: VoteResponse[] = []
   let answers: ResponseAnswer[] = []
+  let total = 0
+  let firstAt: string | null = null
+  let lastAt: string | null = null
+  let optionCounts: Record<string, number> = {}
 
   if (isSupabaseConfigured && supabase) {
-    const { data: resp } = await supabase.from('responses').select('*').eq('form_id', formId)
-    responses = (resp ?? []) as VoteResponse[]
-    const ids = responses.map((r) => r.id)
-    if (ids.length) {
-      const { data: ans } = await supabase.from('response_answers').select('*').in('response_id', ids)
-      answers = (ans ?? []) as ResponseAnswer[]
+    // Non-creators cannot read individual response rows through RLS. This RPC
+    // returns only aggregate counts and anonymised answers when the creator has
+    // enabled voter-facing results; creators retain the full respondent table
+    // through the separate form_voters() RPC.
+    const { data, error } = await supabase.rpc('form_results', { p_form_id: formId })
+    if (error) throw error
+    const row = (data?.[0] ?? null) as {
+      total: number | string
+      first_at: string | null
+      last_at: string | null
+      option_counts: Record<string, number> | null
+      answers: Array<Omit<ResponseAnswer, 'response_id'>> | null
+    } | null
+    if (row) {
+      total = Number(row.total ?? 0)
+      firstAt = row.first_at
+      lastAt = row.last_at
+      optionCounts = row.option_counts ?? {}
+      answers = (row.answers ?? []).map((answer) => ({ ...answer, response_id: '' }))
     }
   } else {
     const db = readDemo()
-    responses = db.responses.filter((r) => r.form_id === formId)
+    const responses = db.responses.filter((r) => r.form_id === formId)
     const ids = new Set(responses.map((r) => r.id))
     answers = db.answers.filter((a) => ids.has(a.response_id))
-  }
-
-  const times = responses.map((r) => r.submitted_at).sort()
-  // Every feedback page's choice tallies into optionCounts (keyed by option id,
-  // plus 'tie'), across all pages — read from each response's `choices`.
-  const optionCounts: Record<string, number> = {}
-  for (const r of responses) {
-    for (const optionId of Object.values(r.choices ?? {})) {
-      optionCounts[optionId] = (optionCounts[optionId] ?? 0) + 1
+    const times = responses.map((r) => r.submitted_at).sort()
+    total = responses.length
+    firstAt = times[0] ?? null
+    lastAt = times[times.length - 1] ?? null
+    // Authored options use their option id. Neutral choices need the page id as
+    // well, otherwise two comparisons would be incorrectly pooled together.
+    for (const r of responses) {
+      for (const [pageId, optionId] of Object.entries(r.choices ?? {})) {
+        const key = optionId === 'tie' ? neutralChoiceKey(pageId) : optionId
+        optionCounts[key] = (optionCounts[key] ?? 0) + 1
+      }
     }
   }
 
@@ -833,9 +861,9 @@ export async function getResults(formId: string): Promise<FormResults> {
   })
 
   return {
-    total: responses.length,
-    firstAt: times[0] ?? null,
-    lastAt: times[times.length - 1] ?? null,
+    total,
+    firstAt,
+    lastAt,
     optionCounts,
     widgets: widgetBreakdowns,
   }
@@ -843,9 +871,8 @@ export async function getResults(formId: string): Promise<FormResults> {
 
 export async function upvoteAnswer(answerId: string): Promise<void> {
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('response_answers').select('upvotes').eq('id', answerId).maybeSingle()
-    const next = (data?.upvotes ?? 0) + 1
-    await supabase.from('response_answers').update({ upvotes: next }).eq('id', answerId)
+    const { error } = await supabase.rpc('upvote_form_answer', { p_answer_id: answerId })
+    if (error) throw error
     return
   }
   const db = readDemo()

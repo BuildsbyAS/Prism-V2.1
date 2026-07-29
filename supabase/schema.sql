@@ -84,7 +84,8 @@ create table if not exists public.pages (
   type        text not null check (type in ('feedback','static')),
   order_index int not null default 0,
   title       text not null default '',
-  body        text not null default ''
+  body        text not null default '',
+  show_neutral_option boolean not null default true
 );
 
 create table if not exists public.options (
@@ -154,7 +155,9 @@ create policy "read pages" on public.pages for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write pages" on public.pages;
 create policy "owner write pages" on public.pages for all
@@ -170,7 +173,9 @@ drop policy if exists "read open forms" on public.forms;
 create policy "read open forms" on public.forms for select
   to anon, authenticated
   using (status = 'open' or creator_id = auth.uid()
-         or public.is_editor(creator_id, collaborators));
+         or public.is_editor(creator_id, collaborators)
+         or (status = 'closed' and auth.uid() is not null
+             and public.is_noon_user()));
 
 drop policy if exists "owner insert forms" on public.forms;
 create policy "owner insert forms" on public.forms for insert
@@ -196,7 +201,9 @@ create policy "read options" on public.options for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write options" on public.options;
 create policy "owner write options" on public.options for all
@@ -212,7 +219,9 @@ create policy "read widgets" on public.widgets for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write widgets" on public.widgets;
 create policy "owner write widgets" on public.widgets for all
@@ -300,6 +309,11 @@ alter table public.widgets add constraint widgets_type_check
 -- Deliberately left null on existing rows: null means "never renamed", and the
 -- app falls back to title, which is exactly what those forms are called today.
 alter table public.forms add column if not exists name text;
+
+-- Generated neutral choices are visible by default for historical forms, but
+-- creators can now hide them per feedback page.
+alter table public.pages
+  add column if not exists show_neutral_option boolean not null default true;
 
 -- ---------------------------------------------------------------------------
 -- One response per browser
@@ -421,9 +435,9 @@ grant execute on function public.form_voters(uuid) to authenticated;
 -- Every published form in the workspace — open and closed, by any creator —
 -- with the dashboard metadata, response tally, and author needed by Team.
 --
--- RLS deliberately hides closed forms, other creators' response rows, and
--- auth.users. This narrowly scoped security-definer function returns one
--- aggregate row per form without granting access to any of those source rows.
+-- RLS deliberately hides other creators' response rows and auth.users. This
+-- narrowly scoped security-definer function returns one aggregate row per form
+-- without granting access to either of those source sets.
 -- The caller must be an authenticated workspace user; anonymous clients cannot
 -- execute it.
 drop function if exists public.team_forms();
@@ -443,6 +457,8 @@ returns table (
   hero_image_url    text,
   hero_bg           text,
   hero_dither       boolean,
+  show_results_to_voters boolean,
+  viewer_has_responded boolean,
   response_count    bigint,
   last_response_at  timestamptz
 )
@@ -465,6 +481,8 @@ as $$
          f.hero_image_url,
          f.hero_bg,
          f.hero_dither,
+         f.show_results_to_voters,
+         coalesce(bool_or(r.voter_id = auth.uid()), false),
          count(r.id),
          max(r.submitted_at)
     from public.forms f
@@ -479,3 +497,210 @@ $$;
 
 revoke all on function public.team_forms() from public;
 grant execute on function public.team_forms() to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Atomic response submission and aggregate voter results
+-- ---------------------------------------------------------------------------
+drop function if exists public.submit_form_response(uuid, text, jsonb, jsonb);
+create function public.submit_form_response(
+  p_form_id uuid,
+  p_voter_session_id text,
+  p_choices jsonb,
+  p_answers jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_response_id uuid := gen_random_uuid();
+  v_answer_count integer := 0;
+  v_choice_count integer := 0;
+begin
+  if auth.uid() is null or not public.is_noon_user() then
+    raise exception 'Authentication required' using errcode = '42501';
+  end if;
+
+  if not exists (
+    select 1 from public.forms f
+     where f.id = p_form_id
+       and f.status = 'open'
+       and (f.expires_at is null or f.expires_at > now())
+  ) then
+    raise exception 'Form is not accepting responses' using errcode = 'P0001';
+  end if;
+
+  select count(*)::integer
+    into v_choice_count
+    from jsonb_each_text(coalesce(p_choices, '{}'::jsonb)) choice(page_id, option_id)
+    join public.pages p
+      on p.id::text = choice.page_id
+     and p.form_id = p_form_id
+     and p.type = 'feedback'
+   where (
+          choice.option_id = 'tie'
+          and p.show_neutral_option
+          and (select count(*) from public.options o where o.page_id = p.id) >= 2
+         )
+      or exists (
+          select 1 from public.options o
+           where o.id::text = choice.option_id
+             and o.page_id = p.id
+             and o.form_id = p_form_id
+         );
+
+  if v_choice_count <> (
+    select count(*) from jsonb_object_keys(coalesce(p_choices, '{}'::jsonb))
+  ) then
+    raise exception 'Invalid form choice' using errcode = '22023';
+  end if;
+
+  insert into public.responses (id, form_id, voter_id, voter_session_id, choices)
+  values (
+    v_response_id,
+    p_form_id,
+    auth.uid(),
+    p_voter_session_id,
+    coalesce(p_choices, '{}'::jsonb)
+  );
+
+  insert into public.response_answers (response_id, widget_id, value)
+  select v_response_id, w.id, answer.value
+    from jsonb_each(coalesce(p_answers, '{}'::jsonb)) answer(widget_id, value)
+    join public.widgets w
+      on w.id::text = answer.widget_id
+     and w.form_id = p_form_id
+    join public.pages p
+      on p.id = w.page_id
+     and p.form_id = p_form_id
+     and p.type = 'feedback';
+
+  get diagnostics v_answer_count = row_count;
+  if v_answer_count <> (
+    select count(*) from jsonb_object_keys(coalesce(p_answers, '{}'::jsonb))
+  ) then
+    raise exception 'Invalid widget answer' using errcode = '22023';
+  end if;
+
+  return v_response_id;
+end;
+$$;
+
+revoke all on function public.submit_form_response(uuid, text, jsonb, jsonb) from public;
+grant execute on function public.submit_form_response(uuid, text, jsonb, jsonb) to authenticated;
+
+drop function if exists public.form_results(uuid);
+create function public.form_results(p_form_id uuid)
+returns table (
+  total bigint,
+  first_at timestamptz,
+  last_at timestamptz,
+  option_counts jsonb,
+  answers jsonb
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  with response_stats as (
+    select count(*) as total,
+           min(r.submitted_at) as first_at,
+           max(r.submitted_at) as last_at
+      from public.responses r
+     where r.form_id = p_form_id
+  ),
+  choice_counts as (
+    select case
+             when choice.option_id = 'tie' then 'tie:' || choice.page_id
+             else choice.option_id
+           end as bucket,
+           count(*) as vote_count
+      from public.responses r
+      cross join lateral jsonb_each_text(coalesce(r.choices, '{}'::jsonb))
+        choice(page_id, option_id)
+     where r.form_id = p_form_id
+     group by 1
+  ),
+  answer_rows as (
+    select a.id, a.widget_id, a.value, a.upvotes
+      from public.response_answers a
+      join public.responses r on r.id = a.response_id
+     where r.form_id = p_form_id
+  )
+  select stats.total,
+         stats.first_at,
+         stats.last_at,
+         coalesce(
+           (select jsonb_object_agg(c.bucket, c.vote_count) from choice_counts c),
+           '{}'::jsonb
+         ),
+         coalesce(
+           (
+             select jsonb_agg(
+               jsonb_build_object(
+                 'id', a.id,
+                 'widget_id', a.widget_id,
+                 'value', a.value,
+                 'upvotes', a.upvotes
+               )
+               order by a.id
+             )
+             from answer_rows a
+           ),
+           '[]'::jsonb
+         )
+    from response_stats stats
+   where exists (
+     select 1 from public.forms f
+      where f.id = p_form_id
+        and auth.uid() is not null
+        and public.is_noon_user()
+        and (
+          public.is_editor(f.creator_id, f.collaborators)
+          or (f.show_results_to_voters and f.status in ('open', 'closed'))
+        )
+   );
+$$;
+
+revoke all on function public.form_results(uuid) from public;
+grant execute on function public.form_results(uuid) to authenticated;
+
+drop function if exists public.upvote_form_answer(uuid);
+create function public.upvote_form_answer(p_answer_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_upvotes integer;
+begin
+  if auth.uid() is null or not public.is_noon_user() then
+    raise exception 'Authentication required' using errcode = '42501';
+  end if;
+
+  update public.response_answers a
+     set upvotes = a.upvotes + 1
+   where a.id = p_answer_id
+     and exists (
+       select 1
+         from public.responses r
+         join public.forms f on f.id = r.form_id
+        where r.id = a.response_id
+          and f.show_results_to_voters
+          and f.status in ('open', 'closed')
+     )
+  returning a.upvotes into v_upvotes;
+
+  if v_upvotes is null then
+    raise exception 'Answer is not available for voting' using errcode = '42501';
+  end if;
+
+  return v_upvotes;
+end;
+$$;
+
+revoke all on function public.upvote_form_answer(uuid) from public;
+grant execute on function public.upvote_form_answer(uuid) to authenticated;

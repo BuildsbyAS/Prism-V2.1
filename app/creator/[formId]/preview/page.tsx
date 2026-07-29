@@ -109,7 +109,9 @@ export default function FormPreviewPage() {
         tab="preview"
         name={full ? formName(full.form) : null}
         canEdit={canEdit}
-        canSeeResults={!full || hasResults(full.form)}
+        canSeeResults={
+          !full || (hasResults(full.form) && (canEdit || full.form.show_results_to_voters))
+        }
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       >
         <DeviceSwitch value={device} onChange={setDevice} />

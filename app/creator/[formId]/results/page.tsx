@@ -3,10 +3,16 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import type { FullForm, FormResults } from '@/lib/types'
+import type { FullForm, FormResults, Page } from '@/lib/types'
 import { getFullForm, getResults, getFormVoters, markResponsesSeen, type FormVoter } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
-import { WIDGET_META, formName, hasResults } from '@/lib/builder'
+import {
+  WIDGET_META,
+  formName,
+  hasResults,
+  neutralChoiceKey,
+  neutralChoiceLabel,
+} from '@/lib/builder'
 import { expiryLabel, personName, timeAgo } from '@/lib/format'
 import FormHeader from '@/components/builder/FormHeader'
 import { ArrowLeft, ArrowUpRight, CaretUp } from '@phosphor-icons/react'
@@ -27,7 +33,7 @@ import { ratingBuckets, sliderBuckets, toBuckets } from '@/components/EndScreen'
 export default function ResultsPage() {
   const params = useParams<{ formId: string }>()
   const formId = params.formId
-  const { user } = useCurrentUser()
+  const { user, loading: authLoading } = useCurrentUser()
   const [full, setFull] = useState<FullForm | null>(null)
   const [results, setResults] = useState<FormResults | null>(null)
   const [voters, setVoters] = useState<FormVoter[] | null>(null)
@@ -80,6 +86,33 @@ export default function ResultsPage() {
             className="mt-5 inline-flex items-center gap-1.5 rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white"
           >
             <ArrowLeft size={14} aria-hidden="true" /> Back to the editor
+          </Link>
+        </main>
+      </>
+    )
+  }
+
+  if (full && !authLoading && !isCreator && !full.form.show_results_to_voters) {
+    return (
+      <>
+        <FormHeader
+          formId={formId}
+          tab="results"
+          name={formName(full.form)}
+          canEdit={false}
+          canSeeResults={false}
+          status={<StatusBadge status={full.form.status} />}
+        />
+        <main className="mx-auto max-w-[600px] px-6 py-24 text-center">
+          <h1 className="font-sans text-xl font-semibold">Results are private</h1>
+          <p className="mt-2 text-[15px] text-muted">
+            The creator hasn’t made this form’s results visible to voters.
+          </p>
+          <Link
+            href="/creator/team"
+            className="mt-5 inline-flex items-center gap-1.5 rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white"
+          >
+            <ArrowLeft size={14} aria-hidden="true" /> Back to team
           </Link>
         </main>
       </>
@@ -176,6 +209,15 @@ export default function ResultsPage() {
                   value: results.optionCounts[o.id] ?? 0,
                   color: optionColor(i),
                 }))
+                const neutralCount = results.optionCounts[neutralChoiceKey(page.id)] ?? 0
+                if (page.show_neutral_option !== false || neutralCount > 0) {
+                  slices.push({
+                    id: neutralChoiceKey(page.id),
+                    label: neutralChoiceLabel(opts.length),
+                    value: neutralCount,
+                    color: optionColor(opts.length),
+                  })
+                }
                 const voted = slices.reduce((sum, sl) => sum + sl.value, 0)
                 const lead = slices.reduce((best, sl) => (sl.value > best.value ? sl : best), slices[0])
                 return (
@@ -273,8 +315,10 @@ export default function ResultsPage() {
  */
 function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) {
   const votePages = full.pages.filter((p) => p.type === 'feedback')
-  const optionName = (id: string) =>
-    id === 'tie' ? 'No preference' : full.options.find((o) => o.id === id)?.name || '—'
+  const optionName = (page: Page, id: string) =>
+    id === 'tie'
+      ? neutralChoiceLabel(full.options.filter((option) => option.page_id === page.id).length)
+      : full.options.find((option) => option.id === id)?.name || '—'
 
   return (
     <section className="rounded-[26px] border border-line bg-card p-5 sm:p-6">
@@ -324,7 +368,7 @@ function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) 
                 </td>
                 {votePages.map((p) => (
                   <td key={p.id} className="py-2.5 pr-3 align-top text-[14px]">
-                    {v.choices[p.id] ? optionName(v.choices[p.id]) : <span className="text-muted">—</span>}
+                    {v.choices[p.id] ? optionName(p, v.choices[p.id]) : <span className="text-muted">—</span>}
                   </td>
                 ))}
               </tr>

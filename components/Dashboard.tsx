@@ -10,6 +10,7 @@ import {
   deleteForm,
   renameForm,
   createForm,
+  acceptsResponses,
   type TeamForm,
   type DashboardForm,
   type ListedForm,
@@ -143,6 +144,8 @@ interface ListItem {
   responseCount: number
   lastResponseAt: string | null
   creator?: { email: string; mine: boolean }
+  /** Team only: whether this viewer has already submitted the form. */
+  hasResponded?: boolean
 }
 
 function toListItems(
@@ -155,15 +158,15 @@ function toListItems(
 }
 
 /**
- * Where an entry's title goes: the builder for your own, the live form for
- * someone else's. A closed form you don't own has nowhere to send you.
+ * Where an entry's broad click target goes: the builder for your own, the real
+ * shared form for someone else's.
  *
  * Your own closed form opens its results instead of the builder — it can't be
  * edited any more (see the builder's read-only mode), so what's left to do with
  * it is read what it found.
  *
- * Someone else's goes to the read-only preview, open or closed. That page is
- * also where its results live, behind a tab.
+ * Preview is intentionally absent here: it has its own explicit button. A click
+ * on the artwork, card body, or list row should mean "open what was shared".
  */
 function entryHref(item: ListItem): string {
   if (!item.creator || item.creator.mine) {
@@ -171,7 +174,7 @@ function entryHref(item: ListItem): string {
       ? `/creator/${item.form.id}/results`
       : `/creator/${item.form.id}/edit`
   }
-  return `/creator/${item.form.id}/preview`
+  return `/f/${item.form.slug}`
 }
 
 /** The dashboard body. Both /creator and /creator/team render this — the
@@ -599,7 +602,7 @@ function CardMeta({ label, children }: { label: string; children: React.ReactNod
 }
 
 function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; viewerEmail: string | null; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
-  const { form, responseCount, creator } = item
+  const { form, responseCount, creator, hasResponded = false } = item
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const title = formTitle(form)
@@ -768,13 +771,7 @@ function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; v
             {form.status === 'draft' ? 'Edit' : 'Results'}
           </Link>
         ) : (
-          <Link
-            href={`/creator/${form.id}/preview`}
-            aria-label={`Preview ${title}`}
-            className="rounded-[12px] bg-black/[0.045] px-8 py-2 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
-          >
-            Preview
-          </Link>
+          <TeamEntryActions form={form} title={title} hasResponded={hasResponded} />
         )}
       </div>
     </div>
@@ -795,7 +792,7 @@ function CreatorChip({ email, mine }: { email: string; mine: boolean }) {
 }
 
 function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: DashboardTab; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
-  const { form, responseCount, creator } = item
+  const { form, responseCount, creator, hasResponded = false } = item
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const title = formTitle(form)
@@ -892,7 +889,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
             mine   · open   → Results       (Edit moves into the menu)
             mine   · closed → Results       (it can no longer be edited)
             theirs · either → Preview       (read-only, with a Results tab) */}
-      <div className="relative z-10 flex w-[124px] shrink-0 items-center justify-end gap-1.5">
+      <div className="relative z-10 flex w-[184px] shrink-0 items-center justify-end gap-1.5">
         {mine ? (
           form.status === 'draft' ? (
             <Link
@@ -912,13 +909,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
             </Link>
           )
         ) : (
-          <Link
-            href={`/creator/${form.id}/preview`}
-            aria-label={`Preview ${title}`}
-            className="rounded-[12px] bg-black/[0.045] px-3 py-1.5 text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
-          >
-            Preview
-          </Link>
+          <TeamEntryActions form={form} title={title} hasResponded={hasResponded} compact />
         )}
         {onDelete && (
           <RowMenu
@@ -933,6 +924,71 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
           />
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Team forms have two distinct destinations:
+ *
+ * - Preview is the read-only inspection surface and remains available.
+ * - Vote is the real published form, opened separately so it can record a
+ *   response. Once submitted, it becomes Results (when shared) or a Voted
+ *   marker (when the creator kept results private).
+ */
+function TeamEntryActions({
+  form,
+  title,
+  hasResponded,
+  compact = false,
+}: {
+  form: ListedForm
+  title: string
+  hasResponded: boolean
+  compact?: boolean
+}) {
+  const pad = compact ? 'px-3 py-1.5' : 'px-4 py-2'
+  const actionClass = `rounded-[12px] ${pad} text-center text-[13px] font-semibold transition`
+  const resultAvailable = hasResponded && form.show_results_to_voters
+  const canVote = !hasResponded && acceptsResponses(form)
+
+  return (
+    <div className="flex items-center justify-end gap-1.5">
+      <Link
+        href={`/creator/${form.id}/preview`}
+        aria-label={`Preview ${title}`}
+        className={`${actionClass} bg-black/[0.045] text-ink hover:bg-black/[0.08]`}
+      >
+        Preview
+      </Link>
+      {canVote && (
+        <Link
+          href={`/f/${form.slug}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Vote on ${title}`}
+          className={`${actionClass} bg-ink text-white hover:opacity-90`}
+        >
+          Vote
+        </Link>
+      )}
+      {resultAvailable && (
+        <Link
+          href={`/creator/${form.id}/results`}
+          aria-label={`Results for ${title}`}
+          className={`${actionClass} bg-ink text-white hover:opacity-90`}
+        >
+          Results
+        </Link>
+      )}
+      {hasResponded && !form.show_results_to_voters && (
+        <span
+          aria-label={`Voted on ${title}`}
+          className={`${actionClass} inline-flex items-center gap-1 bg-open-bg text-open`}
+        >
+          <Check size={13} weight="bold" aria-hidden="true" /> Voted
+        </span>
+      )}
     </div>
   )
 }

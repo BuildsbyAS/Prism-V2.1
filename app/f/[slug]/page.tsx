@@ -16,13 +16,13 @@ import {
 } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
 import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
-import { ArrowClockwise, ArrowDown, Check } from '@phosphor-icons/react'
+import { ArrowClockwise, ArrowDown, ArrowLeft, Check } from '@phosphor-icons/react'
 import Link from 'next/link'
 import ZoomableMedia from '@/components/ZoomableMedia'
 import MediaLightbox, { optionMedia, type LightboxMedia } from '@/components/MediaLightbox'
 import WidgetInput from '@/components/WidgetInput'
 import { EndScreen } from '@/components/EndScreen'
-import { formName } from '@/lib/builder'
+import { formName, neutralChoiceLabel } from '@/lib/builder'
 import HeroPanel from '@/components/HeroPanel'
 
 type Phase = 'welcome' | 'vote' | 'submitting' | 'done'
@@ -74,6 +74,7 @@ export default function VoterPage() {
   // right and dims the rest.
   const [hovered, setHovered] = useState<string | null>(null)
   const [answers, setAnswers] = useState<Record<string, AnswerValue>>({})
+  const [answerSaving, setAnswerSaving] = useState<Record<string, boolean>>({})
   const [results, setResults] = useState<FormResults | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [hasVoted, setHasVoted] = useState(false)
@@ -153,6 +154,9 @@ export default function VoterPage() {
     if (!full) return null
     const page = full.pages[pageIndex]
     if (!page || page.type !== 'feedback') return null
+    if (full.widgets.some((w) => w.page_id === page.id && answerSaving[w.id])) {
+      return 'Wait for your recording to finish saving.'
+    }
     if ((voteOptions[page.id]?.length ?? 0) > 0 && !choices[page.id]) {
       return 'Choose an option to continue.'
     }
@@ -177,6 +181,10 @@ export default function VoterPage() {
 
   async function submit() {
     if (!full || submittingRef.current || hasVoted) return
+    if (Object.values(answerSaving).some(Boolean)) {
+      setError('Wait for your recording to finish saving.')
+      return
+    }
     // The step in front of the voter answers for itself first: every earlier one
     // was cleared on the way through, so naming "each comparison" here would
     // point at pages they can no longer see.
@@ -258,6 +266,7 @@ export default function VoterPage() {
   function restart() {
     setChoices({})
     setAnswers({})
+    setAnswerSaving({})
     setResults(null)
     setHasVoted(false)
     setError(null)
@@ -276,16 +285,17 @@ export default function VoterPage() {
     )
   }
 
-  // Past its expiry date the form is shut, whatever `status` still says — the
-  // creator set a date so they wouldn't have to come back and close it by hand.
-  // Preview ignores it, so an expired form is still checkable by its creator.
-  if (expired && full.form.expires_at) {
+  // A shared link remains readable after the creator closes it, but it must not
+  // render an apparently live voting flow whose submission will be rejected.
+  // Preview ignores status/expiry so the creator can still inspect every screen.
+  if (!preview && (full.form.status !== 'open' || expired)) {
     return (
       <Centered>
         <h1 className="font-sans text-xl font-semibold">This form has closed</h1>
         <p className="mt-2 text-[15px] text-muted">
-          It stopped taking responses on{' '}
-          {new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.
+          {expired && full.form.expires_at
+            ? `It stopped taking responses on ${new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.`
+            : 'It is no longer taking responses.'}
         </p>
       </Centered>
     )
@@ -305,12 +315,12 @@ export default function VoterPage() {
   // Animate on screen change (welcome ↔ vote ↔ done); submitting stays on vote.
   const screen = phase === 'submitting' ? 'vote' : phase
 
-  // The overline names the form — it's the one thing on screen that stays put
-  // across the welcome, vote and thank-you screens. It used to print `title`,
+  // The overline names the form across the welcome and vote screens. It used to print `title`,
   // which is the welcome *headline*, so it read as a duplicate of the <h1>
   // directly beneath it. It shows the creator's name for the form instead.
   //
-  // An unnamed form is still known by its headline (see formName), so on the
+  // The thank-you screen deliberately omits it: the response confirmation is
+  // the only identity it needs. An unnamed form is still known by its headline (see formName), so on the
   // welcome screen that fallback would reintroduce the very duplicate — there,
   // and only there, a neutral label stands in.
   const named = formName(form)
@@ -371,7 +381,8 @@ export default function VoterPage() {
       .sort((a, b) => a.order_index - b.order_index)
     const isLast = step === full.pages.length - 1
     const picked = choices[page.id]
-    const busy = phase === 'submitting'
+    const answerBusy = wids.some((w) => answerSaving[w.id])
+    const busy = phase === 'submitting' || answerBusy
     // Dimming is a hover behaviour, not a record of the answer: a chosen option
     // marks itself (border, badge, button) without greying out the others, so
     // the voter can still compare — and change their mind — afterwards.
@@ -383,22 +394,38 @@ export default function VoterPage() {
 
     return (
       <main className="flex min-h-dvh w-full flex-col">
+        {/* Mobile reads in narrative order: first understand the question, then
+            inspect the options, then answer the follow-up and continue. The
+            desktop heading stays in the left column beside the media. */}
+        <div className="u-rise px-6 pt-10 sm:px-10 lg:hidden">
+          <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+          {page.title && (
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
+          )}
+          {page.body && (
+            <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
+          )}
+        </div>
+
         {/* The 40/60 split holds whether or not anything was uploaded: a context
             screen with no media should read exactly like one with it, and
             collapsing to a single column re-centred the copy mid-page — the
             same words jumped position between two steps of the same form. */}
         <div className="grid w-full flex-1 grid-cols-1 lg:grid-cols-[30fr_70fr]">
-          {/* Left — the brief, the choice, the questions, the way on. Ordered
-              second below lg so the media leads on a phone: you look, then judge. */}
+          {/* Left — the brief, questions and way on. Below lg it follows the
+              media; the mobile-only heading above means the question still
+              leads while the feedback controls stay after the options. */}
           <div className="order-2 flex flex-col justify-center px-6 py-10 sm:px-10 lg:order-1 lg:h-dvh lg:overflow-y-auto lg:px-14">
             <div key={page.id} className="u-rise mx-auto w-full max-w-[560px]">
-              <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
-              {page.title && (
-                <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
-              )}
-              {page.body && (
-                <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
-              )}
+              <div className="hidden lg:block">
+                <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+                {page.title && (
+                  <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[30px]">{page.title}</h1>
+                )}
+                {page.body && (
+                  <p className="mt-3 whitespace-pre-line text-[15px] leading-relaxed text-muted">{page.body}</p>
+                )}
+              </div>
 
               {page.type === 'feedback' &&
                 wids.map((w) => (
@@ -407,6 +434,9 @@ export default function VoterPage() {
                       widget={w}
                       value={answers[w.id]}
                       onChange={(v) => setAnswers((a) => ({ ...a, [w.id]: v }))}
+                      onBusyChange={(saving) =>
+                        setAnswerSaving((current) => ({ ...current, [w.id]: saving }))
+                      }
                       hideLabel={w.config.showTitle === false}
                     />
                   </div>
@@ -436,7 +466,7 @@ export default function VoterPage() {
                   <button
                     type="button"
                     onClick={nextStep}
-                    disabled={needsPick}
+                    disabled={needsPick || busy}
                     className="rounded-[16px] bg-ink px-6 py-2.5 text-[14px] font-medium text-white transition enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Next
@@ -476,12 +506,12 @@ export default function VoterPage() {
                   />
                 ))}
               </div>
-              {/* "They all feel equal" is an answer like any other, so it lives
-                  with them — it just has no media of its own to sit on. */}
-              {selectable && opts.length >= 2 && (
+              {/* The creator controls whether this generated neutral answer is
+                  offered. It lives with the options but has no media of its own. */}
+              {selectable && opts.length >= 2 && page.show_neutral_option !== false && (
                 <div className="mt-4">
                   <ChoiceRow
-                    label={opts.length === 2 ? 'Both feel equal' : 'They all feel equal'}
+                    label={neutralChoiceLabel(opts.length)}
                     selected={picked === 'tie'}
                     disabled={hasVoted || busy}
                     onSelect={() => setChoices((c) => ({ ...c, [page.id]: 'tie' }))}
@@ -502,7 +532,9 @@ export default function VoterPage() {
     // to top-aligned + scrollable when the content is taller than the viewport.
     <main className="flex min-h-dvh w-full flex-col">
     <div className="mx-auto my-auto w-full max-w-[900px] px-4 py-10 sm:py-14">
-      <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+      {phase !== 'done' && (
+        <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+      )}
 
       <div key={screen} className="u-rise">
       {/* ------------------------------ Welcome ----------------------------- */}
@@ -530,7 +562,6 @@ export default function VoterPage() {
         <ThankYou
           form={full}
           results={form.show_results_to_voters ? results : null}
-          choices={choices}
           preview={preview}
           returning={alreadyVoted}
           onRestart={restart}
@@ -549,7 +580,6 @@ export default function VoterPage() {
 function ThankYou({
   form,
   results,
-  choices,
   preview,
   returning,
   onRestart,
@@ -557,8 +587,6 @@ function ThankYou({
 }: {
   form: FullForm
   results: FormResults | null
-  /** This voter's picks, page id → option id (or 'tie') — the "Your choice" tab. */
-  choices: Record<string, string>
   preview: boolean
   /** Arrived already having responded, rather than having just submitted. */
   returning: boolean
@@ -593,10 +621,9 @@ function ThankYou({
       results={results}
       pages={form.pages}
       options={form.options}
-      choices={choices}
       onUpvote={onUpvote}
     >
-      {preview && (
+      {preview ? (
         <button
           type="button"
           onClick={onRestart}
@@ -604,6 +631,13 @@ function ThankYou({
         >
           <ArrowClockwise size={15} aria-hidden="true" /> Start over
         </button>
+      ) : (
+        <Link
+          href="/creator"
+          className="mt-6 inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
+        >
+          <ArrowLeft size={15} aria-hidden="true" /> Back to My forms
+        </Link>
       )}
     </EndScreen>
   )

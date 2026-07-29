@@ -7,7 +7,7 @@ import { CaretDown, Check, X } from '@phosphor-icons/react'
 import { getKnownPeople } from '@/lib/store'
 import { personInitials, personName } from '@/lib/format'
 import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
-import { EndScreen, sampleChoices, sampleResults } from '@/components/EndScreen'
+import { EndScreen, sampleResults } from '@/components/EndScreen'
 import { InlineTextArea } from './Inline'
 import { Field, Toggle } from './controls'
 import DatePicker from './DatePicker'
@@ -88,9 +88,6 @@ export function EndScreenCenter({
       results={results}
       pages={pages}
       options={options}
-      // Sample picks, so the creator sees both tabs — "Your choice" is otherwise
-      // a screen they could only reach by responding to their own form.
-      choices={sampleChoices(pages, options)}
       sample
     />
   )
