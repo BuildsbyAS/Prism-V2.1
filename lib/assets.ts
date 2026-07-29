@@ -45,10 +45,66 @@ function toDataUrl(blob: Blob): Promise<string> {
   })
 }
 
+/** Longest edge for a demo-mode image, and the JPEG quality it re-encodes at. */
+const DEMO_MAX_EDGE = 1600
+const DEMO_QUALITY = 0.82
+
+/**
+ * Shrink an image before it becomes a base64 data URL.
+ *
+ * Only demo mode needs this, and it needs it badly: localStorage holds about
+ * 5MB *in total*, base64 inflates bytes by ~37%, and a phone photo is 3–8MB to
+ * begin with. One upload could exceed the budget on its own — and since the
+ * whole demo database is written as a single key, the failure isn't "the image
+ * didn't save", it's "nothing saves any more".
+ *
+ * Skips anything that isn't a raster photo: GIFs would lose their animation and
+ * SVGs are text (already small, and rasterising them is a downgrade). Falls back
+ * to the original blob if the browser can't decode it.
+ */
+async function shrinkForDemo(file: Blob): Promise<Blob> {
+  const type = (file.type || '').toLowerCase()
+  if (!type.startsWith('image/') || type.includes('gif') || type.includes('svg')) return file
+
+  try {
+    const bitmap = await createImageBitmap(file)
+    const scale = Math.min(1, DEMO_MAX_EDGE / Math.max(bitmap.width, bitmap.height))
+    // Already small enough, and re-encoding would only lose quality.
+    if (scale === 1 && file.size <= 600_000) {
+      bitmap.close()
+      return file
+    }
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      bitmap.close()
+      return file
+    }
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close()
+
+    const out = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', DEMO_QUALITY),
+    )
+    // Keep whichever is actually smaller — a small PNG can beat its own JPEG.
+    return out && out.size < file.size ? out : file
+  } catch {
+    return file
+  }
+}
+
 /**
  * Persist an uploaded asset and return a URL to it. `prefix` groups objects into
  * a folder inside the bucket (e.g. 'media', 'hero', 'voice'). Throws on a failed
- * Supabase upload so callers can surface an error; the demo path never throws.
+ * Supabase upload so callers can surface an error.
+ *
+ * With Supabase the original bytes go up untouched — Storage has room, and the
+ * row only holds a URL. Only the demo path, which inlines the bytes into
+ * localStorage, has to shrink them.
  */
 export async function uploadAsset(file: Blob, opts?: { prefix?: string }): Promise<string> {
   const type = file.type || 'application/octet-stream'
@@ -58,5 +114,5 @@ export async function uploadAsset(file: Blob, opts?: { prefix?: string }): Promi
     if (error) throw error
     return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl
   }
-  return toDataUrl(file)
+  return toDataUrl(await shrinkForDemo(file))
 }

@@ -17,30 +17,64 @@ returns boolean language sql stable as $$
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Helper: may the current user edit this form? The creator, or anyone they
+-- listed as a collaborator. Email-matched (case-insensitively) because that is
+-- what the creator types into the publish dialog — they have no way to know
+-- another person's auth.users id.
+-- ---------------------------------------------------------------------------
+create or replace function public.is_editor(creator uuid, collaborators text[])
+returns boolean language sql stable as $$
+  select public.is_noon_user()
+     and (creator = auth.uid()
+          or lower(auth.jwt() ->> 'email') = any (array(select lower(c) from unnest(collaborators) c)))
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Tables
 -- ---------------------------------------------------------------------------
 create table if not exists public.forms (
   id                     uuid primary key default gen_random_uuid(),
   creator_id             uuid not null references auth.users on delete cascade,
   slug                   text unique not null,
-  title                  text,
+  name                   text,                                   -- creator-facing form name; falls back to title until renamed
+  title                  text,                                   -- welcome screen headline (voter-facing)
   body_copy              text,
   testing_question       text,
   usps_metrics           text,
   project_brief          text,
   hero_image_url         text,
   hero_bg                text not null default 'none',           -- backdrop preset behind the hero media
+  hero_dither            boolean not null default true,          -- pixel/character texture over a gradient backdrop
   thank_you_message      text,                                   -- thank-you screen copy
   mode                   text not null default 'simple' check (mode in ('simple','canvas')),
   status                 text not null default 'draft'  check (status in ('draft','open','closed')),
+  pod                    text not null default '',               -- owning pod, chosen at publish
+  collaborators          text[] not null default '{}',            -- @noon.com emails who can edit alongside the creator
+  expires_at             timestamptz,                            -- stops taking responses after this
   show_results_to_voters boolean not null default false,         -- the "let voters see results" toggle
   require_voter_login    boolean not null default false,
   show_time_estimate     boolean not null default false,
   estimated_minutes      int not null default 1,
   google_sheet_id        text,
+  -- When the creator last opened this form's results. Responses newer than this
+  -- are the "new responses" the header's Updates menu counts; null = never opened.
+  responses_seen_at      timestamptz,
   results_token          uuid not null default gen_random_uuid(),
   created_at             timestamptz not null default now(),
   published_at           timestamptz
+);
+
+-- A published form has to be attributable and time-boxed. The builder blocks
+-- this in two places already; the constraint is what makes it true of the data
+-- rather than of one client. `name` falls back to the welcome headline, the same
+-- way formName() does, so a form the creator never explicitly renamed still
+-- counts as named.
+alter table public.forms drop constraint if exists forms_publish_details;
+alter table public.forms add constraint forms_publish_details check (
+  status <> 'open'
+  or (coalesce(nullif(btrim(name), ''), nullif(btrim(title), '')) is not null
+      and btrim(pod) <> ''
+      and expires_at is not null)
 );
 
 -- Ordered content pages between the welcome and end screens.
@@ -60,12 +94,12 @@ create table if not exists public.options (
   name        text,
   description text,
   order_index int not null default 0,
-  embed_type    text check (embed_type in ('image','video','react','figma')),
+  embed_type    text check (embed_type in ('image','video','react','figma','protopie')),
   embed_url     text,
   alt_text      text not null default '',
   is_decorative boolean not null default false,
-  focal_x       int not null default 50,           -- image crop focal point (0–100)
-  focal_y       int not null default 50,
+  focal_x       int not null default 50,           -- unused: steered a crop the app no longer does
+  focal_y       int not null default 50,           --   kept (with defaults) so existing rows still write
   brightness    int not null default 0,            -- −100…100 brightness delta
   is_static     boolean not null default false   -- a context/current-iteration screen, not a poll choice
 );
@@ -118,22 +152,25 @@ drop policy if exists "read pages" on public.pages;
 create policy "read pages" on public.pages for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and (f.status = 'open' or f.creator_id = auth.uid())));
+                 where f.id = form_id
+                   and (f.status = 'open' or f.creator_id = auth.uid()
+                        or public.is_editor(f.creator_id, f.collaborators))));
 
 drop policy if exists "owner write pages" on public.pages;
 create policy "owner write pages" on public.pages for all
   to authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()))
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)))
   with check (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()));
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)));
 
 -- FORMS: public may read a form only when it is open; the owner (a @noon.com
 -- account) may do everything to their own rows.
 drop policy if exists "read open forms" on public.forms;
 create policy "read open forms" on public.forms for select
   to anon, authenticated
-  using (status = 'open' or creator_id = auth.uid());
+  using (status = 'open' or creator_id = auth.uid()
+         or public.is_editor(creator_id, collaborators));
 
 drop policy if exists "owner insert forms" on public.forms;
 create policy "owner insert forms" on public.forms for insert
@@ -143,8 +180,8 @@ create policy "owner insert forms" on public.forms for insert
 drop policy if exists "owner update forms" on public.forms;
 create policy "owner update forms" on public.forms for update
   to authenticated
-  using (creator_id = auth.uid() and public.is_noon_user())
-  with check (creator_id = auth.uid() and public.is_noon_user());
+  using (public.is_editor(creator_id, collaborators))
+  with check (public.is_editor(creator_id, collaborators));
 
 drop policy if exists "owner delete forms" on public.forms;
 create policy "owner delete forms" on public.forms for delete
@@ -157,29 +194,33 @@ drop policy if exists "read options" on public.options;
 create policy "read options" on public.options for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and (f.status = 'open' or f.creator_id = auth.uid())));
+                 where f.id = form_id
+                   and (f.status = 'open' or f.creator_id = auth.uid()
+                        or public.is_editor(f.creator_id, f.collaborators))));
 
 drop policy if exists "owner write options" on public.options;
 create policy "owner write options" on public.options for all
   to authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()))
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)))
   with check (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()));
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)));
 
 drop policy if exists "read widgets" on public.widgets;
 create policy "read widgets" on public.widgets for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and (f.status = 'open' or f.creator_id = auth.uid())));
+                 where f.id = form_id
+                   and (f.status = 'open' or f.creator_id = auth.uid()
+                        or public.is_editor(f.creator_id, f.collaborators))));
 
 drop policy if exists "owner write widgets" on public.widgets;
 create policy "owner write widgets" on public.widgets for all
   to authenticated
   using (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()))
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)))
   with check (exists (select 1 from public.forms f
-                 where f.id = form_id and f.creator_id = auth.uid() and public.is_noon_user()));
+                 where f.id = form_id and public.is_editor(f.creator_id, f.collaborators)));
 
 -- RESPONSES / RESPONSE_ANSWERS: anyone may submit; only the form's owner may
 -- read them via RLS. The public read-only results link (/r/[resultsToken]) is
@@ -254,3 +295,107 @@ alter table public.responses add column if not exists choices jsonb not null def
 alter table public.widgets drop constraint if exists widgets_type_check;
 alter table public.widgets add constraint widgets_type_check
   check (type in ('rating','slider','radio','text','voice'));
+
+-- The form's name split away from the welcome headline it used to double as.
+-- Deliberately left null on existing rows: null means "never renamed", and the
+-- app falls back to title, which is exactly what those forms are called today.
+alter table public.forms add column if not exists name text;
+
+-- ---------------------------------------------------------------------------
+-- One response per browser
+-- ---------------------------------------------------------------------------
+-- One response per account
+-- ---------------------------------------------------------------------------
+-- Voting requires a signed-in @noon.com account, and each account gets one
+-- response per form. `voter_id` is the account; `voter_session_id` stays as a
+-- record of which browser it came from, but no longer constrains anything.
+alter table public.responses add column if not exists voter_id uuid references auth.users on delete set null;
+
+-- The per-browser rule this replaces. Two colleagues sharing a machine are two
+-- accounts and must both be able to respond, so the old index has to go.
+drop index if exists public.responses_one_per_browser;
+
+-- The real enforcement. The client checks first so the voter finds out before
+-- filling the form in, but two tabs racing — or a hand-made request — still hit
+-- this. Partial, so pre-login rows (voter_id null) don't collide with each other.
+--
+-- Creating this over existing duplicates will fail; de-duplicate first, keeping
+-- each account's earliest response:
+--   delete from public.responses r using public.responses keep
+--    where r.form_id = keep.form_id
+--      and r.voter_id = keep.voter_id
+--      and r.voter_id is not null
+--      and (keep.submitted_at, keep.id) < (r.submitted_at, r.id);
+create unique index if not exists responses_one_per_account
+  on public.responses (form_id, voter_id)
+  where voter_id is not null;
+
+-- Superseded by the "own response" select policy below: an authenticated voter
+-- can now read their own row directly, so the boolean-only workaround for
+-- anonymous voters is no longer needed.
+drop function if exists public.has_responded(uuid, text);
+
+-- Voting is authenticated-only, and you may only file a response as yourself.
+-- This is what stops a hand-made request voting on someone else's behalf — the
+-- unique index alone would not.
+drop policy if exists "anyone insert responses" on public.responses;
+drop policy if exists "signed-in insert own response" on public.responses;
+create policy "signed-in insert own response" on public.responses for insert
+  to authenticated
+  with check (voter_id = auth.uid() and public.is_noon_user());
+
+-- So a voter can be told "you've already responded" before filling the form in.
+-- Scoped to their own rows: it reveals nothing about anyone else's answers.
+drop policy if exists "voter reads own response" on public.responses;
+create policy "voter reads own response" on public.responses for select
+  to authenticated
+  using (voter_id = auth.uid());
+
+-- Answers follow the same rule: only attachable to a response you own.
+drop policy if exists "anyone insert answers" on public.response_answers;
+drop policy if exists "signed-in insert own answers" on public.response_answers;
+create policy "signed-in insert own answers" on public.response_answers for insert
+  to authenticated
+  with check (exists (select 1 from public.responses r
+                      where r.id = response_id and r.voter_id = auth.uid()));
+
+-- ---------------------------------------------------------------------------
+-- Who responded (creator only)
+-- ---------------------------------------------------------------------------
+-- The results page lists respondents by name. That needs `auth.users`, which no
+-- client may read, and `responses`, which is owner-only — so it goes through a
+-- security definer RPC rather than a query.
+--
+-- The `exists` clause is the access control: it runs with the definer's rights,
+-- so the caller's own id is the only thing that decides whether any rows come
+-- back. A non-owner asking for someone else's form gets an empty set, not an
+-- error — there is nothing to probe.
+--
+-- Deliberately no `voter_email` column on `responses`: denormalising it would
+-- mean trusting the client to state who it is, and the address would then rot
+-- when someone's account changes.
+create or replace function public.form_voters(p_form_id uuid)
+returns table (
+  response_id  uuid,
+  voter_email  text,
+  submitted_at timestamptz,
+  choices      jsonb
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select r.id, u.email::text, r.submitted_at, r.choices
+    from public.responses r
+    left join auth.users u on u.id = r.voter_id
+   where r.form_id = p_form_id
+     and exists (
+       select 1 from public.forms f
+        where f.id = p_form_id and f.creator_id = auth.uid()
+     )
+   order by r.submitted_at desc;
+$$;
+
+revoke all on function public.form_voters(uuid) from public;
+grant execute on function public.form_voters(uuid) to authenticated;

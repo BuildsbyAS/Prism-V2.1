@@ -32,7 +32,7 @@ export default function UserMenu() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label="Account"
-        className="grid h-9 w-9 place-items-center rounded-full bg-open-bg text-[14px] font-bold text-open transition hover:opacity-90"
+        className="u-circle grid h-9 w-9 place-items-center rounded-full bg-black/[0.06] text-[13px] font-semibold tracking-tight text-ink transition hover:bg-black/[0.1]"
       >
         {initials}
       </button>

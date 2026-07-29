@@ -4,6 +4,14 @@
   --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;
 
+  /* Display face for headings — Geist Pixel Square. It ships a single weight
+     (500); the synthetic 600 that `font-semibold` produces thickens cleanly, so
+     headings keep their existing weight/tracking utilities. Exposed as
+     `font-pixel` for the few display strings that aren't <h*> elements (the
+     builder's inline title editors, which must match the voter's headings). */
+  --font-pixel: var(--font-geist-pixel-square), ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+
   /* Motion — strong custom curves (the built-in CSS easings are too weak). These
      override Tailwind's `ease-out`/`ease-in-out` utilities and become the default
      for every `transition-*` utility, so the whole app feels snappy by default. */
@@ -42,12 +50,98 @@ body {
   overflow-x: hidden;
 }
 
+/* Every heading renders in the pixel display face. Done as an element rule
+   rather than per-heading classes so new headings inherit it automatically.
+   It lives in `@layer base` on purpose: unlayered rules outrank every layer
+   regardless of specificity, so without the layer a `font-sans` utility could
+   not override this. Layered, utilities win and a heading can opt back out. */
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-pixel);
+  }
+}
+
 /* Figma-style corner smoothing on every rounded element. Progressive
    enhancement: browsers without `corner-shape` just render normal rounding. */
 *,
 *::before,
 *::after {
   corner-shape: superellipse(4);
+}
+
+/* Opt-out for the few elements that must be a true circle — an avatar or a
+   status dot. Corner smoothing is for rounded *rectangles*; on a square with a
+   full radius it renders a visible squircle. Deliberately opt-in: pills, tabs
+   and inputs keep the smoothed corners. Unlayered like the rule above, so its
+   class selector outranks the `*` there. */
+.u-circle {
+  corner-shape: round;
+}
+
+/* ---------------------------------------------------------------------------
+   Hero backdrop dithering.
+
+   A large gradient — however well tuned — still reads as a smooth CSS ramp and
+   shows banding on 8-bit displays. These three layers give it the texture of a
+   plotted surface instead:
+
+     .hero-dither       2px ordered checkerboard, alternating light/dark cells
+     .hero-dither-fine  3px dot grid, concentrated at the lit end
+     .hero-glyphs       a field of tiny Geist Pixel characters
+
+   Each is masked along the gradient's own 158° axis, so the texture is densest
+   through the mid-tones (where banding actually shows) and fades to nothing at
+   both extremes — the same falloff real ordered dithering has. All three use
+   soft-light so they modulate the colour underneath rather than laying grey over
+   it; the checkerboard alternates white and black cells so it both lifts and
+   deepens, which is what makes it read as stipple rather than a haze.
+   --------------------------------------------------------------------------- */
+.hero-dither,
+.hero-dither-fine,
+.hero-glyphs {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+}
+
+/* 3px cells rather than 2px: a 2px cell lands on half a device pixel at
+   fractional DPRs and browser zoom, which beats against the grid and shows up as
+   moiré streaks across a large panel. */
+.hero-dither {
+  background-image: conic-gradient(
+    rgba(255, 255, 255, 0.5) 0 25%,
+    rgba(0, 0, 0, 0.5) 0 50%,
+    rgba(255, 255, 255, 0.5) 0 75%,
+    rgba(0, 0, 0, 0.5) 0
+  );
+  background-size: 6px 6px;
+  opacity: 0.55;
+  -webkit-mask-image: linear-gradient(158deg, transparent 4%, #000 34%, #000 62%, transparent 90%);
+  mask-image: linear-gradient(158deg, transparent 4%, #000 34%, #000 62%, transparent 90%);
+}
+
+.hero-dither-fine {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.8) 0.75px, transparent 1px);
+  background-size: 5px 5px;
+  opacity: 0.5;
+  -webkit-mask-image: linear-gradient(158deg, #000 0%, transparent 44%);
+  mask-image: linear-gradient(158deg, #000 0%, transparent 44%);
+}
+
+/* Character field. `background-image` is set inline from HERO_GLYPH_TILE and
+   repeats, so it covers any panel — see the note there for why this stopped
+   being DOM text. */
+.hero-glyphs {
+  background-repeat: repeat;
+  opacity: 0.38;
+  -webkit-mask-image: linear-gradient(158deg, transparent 10%, #000 46%, #000 70%, transparent 96%);
+  mask-image: linear-gradient(158deg, transparent 10%, #000 46%, #000 70%, transparent 96%);
 }
 
 /* ---------------------------------------------------------------------------
@@ -106,7 +200,10 @@ summary {
   transition-timing-function: var(--ease-out);
   transition-duration: 160ms;
 }
-button:not(:disabled):active,
+/* aria-disabled counts as disabled here: a control that explains why it's
+   blocked stays focusable and hoverable (so its tooltip is reachable), but it
+   shouldn't answer a press as though it did something. */
+button:not(:disabled):not([aria-disabled="true"]):active,
 [role="button"]:not([aria-disabled="true"]):active {
   transform: scale(0.97);
 }

@@ -2,11 +2,25 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
-import type { AnswerValue, FullForm, FormResults, Option, Page } from '@/lib/types'
-import { getPublicForm, submitResponse, getResults, upvoteAnswer } from '@/lib/store'
-import MediaEmbed from '@/components/MediaEmbed'
+import type { AnswerValue, FullForm, FormResults, Option } from '@/lib/types'
+import {
+  getPublicForm,
+  submitResponse,
+  getResults,
+  upvoteAnswer,
+  hasResponded,
+  isAlreadyResponded,
+  isLoginRequired,
+  VOTING_REQUIRES_LOGIN,
+} from '@/lib/store'
+import { useCurrentUser } from '@/lib/auth'
+import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
+import Link from 'next/link'
+import ZoomableMedia from '@/components/ZoomableMedia'
+import MediaLightbox, { optionMedia, type LightboxMedia } from '@/components/MediaLightbox'
 import WidgetInput from '@/components/WidgetInput'
-import { WIDGET_META } from '@/lib/builder'
+import { EndScreen } from '@/components/EndScreen'
+import { formName } from '@/lib/builder'
 import HeroPanel from '@/components/HeroPanel'
 
 type Phase = 'welcome' | 'vote' | 'submitting' | 'done'
@@ -28,6 +42,7 @@ function sessionId(slug: string): string {
 export default function VoterPage() {
   const params = useParams<{ slug: string }>()
   const slug = params.slug
+  const { user, loading: authLoading } = useCurrentUser()
 
   const [full, setFull] = useState<FullForm | null>(null)
   // Options per page, order randomised once (creator can't lock it yet — V1).
@@ -39,18 +54,28 @@ export default function VoterPage() {
   const [results, setResults] = useState<FormResults | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [hasVoted, setHasVoted] = useState(false)
+  // Voted on an earlier visit, rather than just now — changes the done screen's
+  // wording from "thanks" to "you've already responded".
+  const [alreadyVoted, setAlreadyVoted] = useState(false)
+  // Decided once, when the form loads: reading the clock during render is both
+  // impure and pointless, since nothing re-renders this page as time passes.
+  const [expired, setExpired] = useState(false)
   // Per-option counter — bumping it remounts that option's embed to reset a
   // react/figma/video prototype back to its starting state (preview only).
   const [protoResets, setProtoResets] = useState<Record<string, number>>({})
   const submittingRef = useRef(false)
   // Preview mode (from the builder): fresh every time (no vote-lock, no persistence).
   const [preview] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('preview') === '1')
+  // Only the hero needs the page to hold this; every other piece of media on the
+  // voter's page owns its own viewer through ZoomableMedia.
+  const [zoom, setZoom] = useState<LightboxMedia | null>(null)
   const pendingScroll = useRef<string | null>(null)
 
   useEffect(() => {
     getPublicForm(slug).then((f) => {
       if (!f) return setState('missing')
       setFull(f)
+      if (!preview && f.form.expires_at && Date.now() > Date.parse(f.form.expires_at)) setExpired(true)
       const byPage: Record<string, Option[]> = {}
       for (const page of f.pages) {
         const opts = f.options.filter((o) => o.page_id === page.id).sort((a, b) => a.order_index - b.order_index)
@@ -71,10 +96,26 @@ export default function VoterPage() {
         }
         return
       }
-      // Every visit begins fresh on the welcome screen — no cross-session vote
-      // lock (it only produced confusing "already voted / 0 responses" states).
+
+      // One response per account (per browser in demo mode). Asked of the store
+      // rather than a local "voted" flag: an earlier lock kept that flag in
+      // localStorage, where it drifted out of sync and showed "already voted" on
+      // forms with zero responses. Derived from the rows, the lock goes away if
+      // the responses do.
+      //
+      // Waits for auth to settle — running this mid-resolution would ask "has
+      // nobody responded?", get false, and quietly hand a second vote to someone
+      // who already has one.
+      if (authLoading) return
+      hasResponded(f.form.id, { userId: user?.id ?? null, sessionId: sessionId(slug) }).then((already) => {
+        if (!already) return
+        setHasVoted(true)
+        setAlreadyVoted(true)
+        setPhase('done')
+        if (f.form.show_results_to_voters) getResults(f.form.id).then(setResults)
+      })
     })
-  }, [slug, preview])
+  }, [slug, preview, authLoading, user?.id])
 
   // In preview, jump to the page the creator was editing.
   useEffect(() => {
@@ -96,7 +137,13 @@ export default function VoterPage() {
       setError('Please choose an option on each comparison before submitting.')
       return
     }
-    const missing = full.widgets.filter((w) => w.config.required && answers[w.id] === undefined)
+    // Only inputs the voter can actually see. A page switched to static keeps its
+    // inputs (so switching back restores them) but never renders them, and
+    // validating those would block submit on a question that isn't on screen.
+    const askedPageIds = new Set(full.pages.filter((p) => p.type === 'feedback').map((p) => p.id))
+    const missing = full.widgets.filter(
+      (w) => askedPageIds.has(w.page_id) && w.config.required && answers[w.id] === undefined,
+    )
     if (missing.length) {
       setError('Please answer the required questions.')
       return
@@ -105,12 +152,27 @@ export default function VoterPage() {
     setError(null)
     setPhase('submitting')
     try {
-      await submitResponse(full.form.id, sessionId(slug), { choices, answers })
-      // In-session flag only — prevents an immediate double-submit; not persisted.
+      await submitResponse(full.form.id, { userId: user?.id ?? null, sessionId: sessionId(slug) }, { choices, answers })
       setHasVoted(true)
       if (full.form.show_results_to_voters) setResults(await getResults(full.form.id))
       setPhase('done')
     } catch (e) {
+      // The store rejected it because this browser already has a response —
+      // another tab got there first, or the page was open from before. Not an
+      // error to shout about: land on the same screen a returning voter sees.
+      if (isAlreadyResponded(e)) {
+        setHasVoted(true)
+        setAlreadyVoted(true)
+        if (full.form.show_results_to_voters) setResults(await getResults(full.form.id))
+        setPhase('done')
+        return
+      }
+      // The session expired between loading the form and submitting.
+      if (isLoginRequired(e)) {
+        setError('Your session expired. Sign in again to submit your response.')
+        setPhase('vote')
+        return
+      }
       setError(e instanceof Error ? e.message : 'Something went wrong.')
       setPhase('vote')
     } finally {
@@ -140,9 +202,46 @@ export default function VoterPage() {
     )
   }
 
+  // Past its expiry date the form is shut, whatever `status` still says — the
+  // creator set a date so they wouldn't have to come back and close it by hand.
+  // Preview ignores it, so an expired form is still checkable by its creator.
+  if (expired && full.form.expires_at) {
+    return (
+      <Centered>
+        <h1 className="text-xl font-semibold">This form has closed</h1>
+        <p className="mt-2 text-[15px] text-muted">
+          It stopped taking responses on{' '}
+          {new Date(full.form.expires_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}.
+        </p>
+      </Centered>
+    )
+  }
+
+  // Responses are one-per-account, so voting needs a signed-in account. Gate the
+  // whole form rather than only the submit: filling a form in and being asked to
+  // sign in at the end risks losing the answers to the round trip.
+  //
+  // Not in preview — that's the creator checking their own work, already signed
+  // in, and it never records a response.
+  if (VOTING_REQUIRES_LOGIN && !preview && !authLoading && !user) {
+    return <SignInGate slug={slug} />
+  }
+
   const { form } = full
   // Animate on screen change (welcome ↔ vote ↔ done); submitting stays on vote.
   const screen = phase === 'submitting' ? 'vote' : phase
+
+  // The overline names the form — it's the one thing on screen that stays put
+  // across the welcome, vote and thank-you screens. It used to print `title`,
+  // which is the welcome *headline*, so it read as a duplicate of the <h1>
+  // directly beneath it. It shows the creator's name for the form instead.
+  //
+  // An unnamed form is still known by its headline (see formName), so on the
+  // welcome screen that fallback would reintroduce the very duplicate — there,
+  // and only there, a neutral label stands in.
+  const named = formName(form)
+  const echoesHeadline = phase === 'welcome' && named === (form.title ?? '').trim()
+  const overline = (echoesHeadline ? '' : named) || 'Feedback'
 
   // Welcome + hero media gets its own full-bleed split layout: copy on the left,
   // the media on its backdrop running edge to edge on the right. Below lg
@@ -153,7 +252,7 @@ export default function VoterPage() {
       // is exactly one viewport tall, so the media can never exceed 50vw × 100dvh.
       <main className="grid min-h-dvh w-full lg:h-dvh lg:grid-cols-2">
         <div className="u-rise flex flex-col justify-center px-6 py-14 sm:px-10 lg:px-14 lg:overflow-y-auto">
-          <p className="text-[14px] font-medium text-muted">{form.title || 'Feedback'}</p>
+          <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-[32px]">{form.title || 'Share your feedback'}</h1>
           {form.body_copy && <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted">{form.body_copy}</p>}
           <div className="mt-8">
@@ -167,7 +266,14 @@ export default function VoterPage() {
             )}
           </div>
         </div>
-        <HeroPanel src={form.hero_image_url} bg={form.hero_bg} className="h-[60vh] lg:h-full" />
+        <HeroPanel
+          src={form.hero_image_url}
+          bg={form.hero_bg}
+          dither={form.hero_dither}
+          className="h-[60vh] lg:h-full"
+          onExpand={() => setZoom({ type: 'image', src: form.hero_image_url, title: form.title || 'Hero image', alt: '' })}
+        />
+        {zoom && <MediaLightbox media={zoom} onClose={() => setZoom(null)} />}
       </main>
     )
   }
@@ -177,7 +283,7 @@ export default function VoterPage() {
     // to top-aligned + scrollable when the content is taller than the viewport.
     <main className="flex min-h-dvh w-full flex-col">
     <div className="mx-auto my-auto w-full max-w-[900px] px-4 py-10 sm:py-14">
-      <p className="text-[14px] font-medium text-muted">{form.title || 'Feedback'}</p>
+      <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
 
       <div key={screen} className="u-rise">
       {/* ------------------------------ Welcome ----------------------------- */}
@@ -236,8 +342,12 @@ export default function VoterPage() {
                                     )}
                                   </div>
                                   {o.description && <p className="border-b border-line px-5 py-2.5 text-[14px] text-muted">{o.description}</p>}
-                                  <div className="flex justify-center px-5 py-6">
-                                    <MediaEmbed key={protoResets[o.id] ?? 0} type={o.embed_type} src={o.embed_url} title={o.name} alt={o.is_decorative ? '' : o.alt_text || o.name} focalX={o.focal_x} focalY={o.focal_y} brightness={o.brightness} />
+                                  {/* Media keeps its own aspect ratio, so options
+                                      in a row can differ in height; the grid
+                                      stretches every card to the tallest and
+                                      this cell centres its media in what's left. */}
+                                  <div className="flex flex-1 items-center justify-center px-5 py-6">
+                                    <ZoomableMedia media={optionMedia(o)} embedKey={protoResets[o.id] ?? 0} />
                                   </div>
                                   <div className="mt-auto border-t border-line p-3">
                                     <button type="button" onClick={() => setChoices((c) => ({ ...c, [page.id]: o.id }))} disabled={hasVoted} className={`w-full rounded-[16px] py-2 text-[14px] font-semibold text-ink transition disabled:cursor-not-allowed ${selected ? 'border border-transparent bg-black/[0.06]' : 'border border-line-strong hover:bg-black/[0.03]'}`}>
@@ -266,14 +376,13 @@ export default function VoterPage() {
                     <div className={`grid grid-cols-1 gap-4 ${opts.length >= 2 ? 'sm:grid-cols-2' : ''}`}>
                       {opts.map((o) => (
                         <div key={o.id} className="overflow-hidden rounded-[26px] border border-line bg-card shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)]">
-                          {(o.name || o.description) && (
-                            <div className="border-b border-line px-5 py-3">
-                              {o.name && <span className="text-[15px] font-semibold tracking-tight">{o.name}</span>}
-                              {o.description && <p className="mt-0.5 text-[14px] text-muted">{o.description}</p>}
-                            </div>
-                          )}
-                          <div className="flex justify-center px-5 py-6">
-                            <MediaEmbed type={o.embed_type} src={o.embed_url} title={o.name} alt={o.is_decorative ? '' : o.alt_text || o.name} focalX={o.focal_x} focalY={o.focal_y} brightness={o.brightness} />
+                          {/* No name/description header: a static page shows the
+                              media alone, and the builder hides those editors for
+                              it. Rendering them would surface the "Option A"
+                              defaults a page carries over when it's switched
+                              from feedback to static. */}
+                          <div className="flex h-full items-center justify-center px-5 py-6">
+                            <ZoomableMedia media={optionMedia(o)} />
                           </div>
                         </div>
                       ))}
@@ -299,6 +408,7 @@ export default function VoterPage() {
           results={form.show_results_to_voters ? results : null}
           chosenIds={new Set(Object.values(choices))}
           preview={preview}
+          returning={alreadyVoted}
           onRestart={restart}
           onUpvote={async (id) => {
             await upvoteAnswer(id)
@@ -317,6 +427,7 @@ function ThankYou({
   results,
   chosenIds,
   preview,
+  returning,
   onRestart,
   onUpvote,
 }: {
@@ -324,124 +435,68 @@ function ThankYou({
   results: FormResults | null
   chosenIds: Set<string>
   preview: boolean
+  /** Arrived already having responded, rather than having just submitted. */
+  returning: boolean
   onRestart: () => void
   onUpvote: (id: string) => void
 }) {
-  const optionsByPage = (page: Page) => form.options.filter((o) => o.page_id === page.id)
-  const feedbackPages = form.pages.filter((p) => p.type === 'feedback')
-
   return (
-    <div className="mt-6">
-      <div className="flex items-center gap-2.5">
-        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true" className="u-pop">
-          <circle cx="11" cy="11" r="11" fill="#18191d" />
-          <path d="M6 11.2l3.2 3.2L16 7.6" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-        <h1 className="text-xl font-semibold">{form.form.thank_you_message ? 'Thanks!' : "Thanks — your feedback's in."}</h1>
-      </div>
-      {form.form.thank_you_message && <p className="mt-2 max-w-xl text-[15px] leading-relaxed text-muted">{form.form.thank_you_message}</p>}
-
+    <EndScreen
+      headline={
+        returning ? 'You\u2019ve already responded' : form.form.thank_you_message ? 'Thanks!' : "Thanks \u2014 your feedback's in."
+      }
+      message={
+        returning
+          ? // Say where the limit comes from, so it reads as a rule rather than a
+            // glitch — and so someone who genuinely needs to redo it knows how.
+            VOTING_REQUIRES_LOGIN
+            ? 'This form takes one response per person, and yours has already been counted.'
+            : 'This form takes one response per browser, and this one has already been counted.'
+          : form.form.thank_you_message
+      }
+      results={results}
+      pages={form.pages}
+      options={form.options}
+      chosenIds={chosenIds}
+      onUpvote={onUpvote}
+    >
       {preview && (
         <button
           type="button"
           onClick={onRestart}
-          className="mt-5 inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
+          className="mt-6 inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong px-4 py-2 text-[14px] font-medium text-ink transition hover:bg-black/[0.03]"
         >
           <span aria-hidden="true">↻</span> Start over
         </button>
       )}
-
-      {results && (
-        <div className="mt-8 space-y-8">
-          <p className="text-sm font-semibold">
-            {results.total} {results.total === 1 ? 'response' : 'responses'} so far
-          </p>
-
-          {feedbackPages.map((page) => {
-            const opts = optionsByPage(page)
-            if (opts.length === 0) return null
-            return (
-              <section key={page.id}>
-                <h2 className="text-sm font-semibold">{page.title || 'Where people landed'}</h2>
-                <div className="mt-3 space-y-3">
-                  {opts.map((o) => {
-                    const n = results.optionCounts[o.id] ?? 0
-                    const pct = results.total ? Math.round((n / results.total) * 100) : 0
-                    const mine = chosenIds.has(o.id)
-                    return (
-                      <div key={o.id}>
-                        <div className="mb-1 flex items-center justify-between text-sm">
-                          <span className="font-medium">
-                            {o.name}
-                            {mine && <span className="ml-2 rounded-full bg-black/[0.06] px-2 py-0.5 text-[13px] text-muted">your pick</span>}
-                          </span>
-                          <span className="tabular-nums text-muted">{pct}% · {n}</span>
-                        </div>
-                        <div className="h-2.5 w-full overflow-hidden rounded-full bg-black/[0.06]">
-                          <div className="h-full rounded-full bg-ink transition-all duration-500" style={{ width: `${pct}%` }} />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </section>
-            )
-          })}
-
-          {results.widgets.map((b) => (
-            <section key={b.widget.id}>
-              <h3 className="text-sm font-semibold">{b.widget.config.label || WIDGET_META[b.widget.type].label}</h3>
-              {b.widget.type === 'voice' ? (
-                <ul className="mt-2 space-y-2">
-                  {b.textAnswers.length === 0 && <li className="text-[14px] text-muted">No responses yet.</li>}
-                  {b.textAnswers.map((t) => (
-                    <li key={t.id} className="flex items-center justify-between gap-3 rounded-xl border border-line px-3.5 py-2.5">
-                      <audio src={t.value} controls className="h-9 w-full min-w-0 max-w-[280px]" />
-                      <button type="button" onClick={() => onUpvote(t.id)} className="flex-none rounded-full border border-line px-2 py-0.5 text-[13px] font-medium text-muted transition hover:text-ink">
-                        ▲ {t.upvotes}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : b.widget.type === 'text' ? (
-                <ul className="mt-2 space-y-2">
-                  {b.textAnswers.length === 0 && <li className="text-[14px] text-muted">No responses yet.</li>}
-                  {b.textAnswers.map((t) => (
-                    <li key={t.id} className="flex items-start justify-between gap-3 rounded-xl border border-line px-3.5 py-2.5 text-sm leading-relaxed">
-                      <span>{t.value}</span>
-                      <button type="button" onClick={() => onUpvote(t.id)} className="flex-none rounded-full border border-line px-2 py-0.5 text-[13px] font-medium text-muted transition hover:text-ink">
-                        ▲ {t.upvotes}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="mt-2 space-y-2">
-                  {b.average !== null && <p className="text-[14px] text-muted">Average: <span className="font-medium text-ink">{b.average}</span></p>}
-                  {Object.entries(b.distribution).map(([k, n]) => {
-                    const pct = b.count ? Math.round((n / b.count) * 100) : 0
-                    return (
-                      <div key={k}>
-                        <div className="mb-1 flex items-center justify-between text-[14px]">
-                          <span>{k}</span>
-                          <span className="tabular-nums text-muted">{pct}% · {n}</span>
-                        </div>
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-black/[0.06]">
-                          <div className="h-full rounded-full bg-ink" style={{ width: `${pct}%` }} />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
-          ))}
-        </div>
-      )}
-    </div>
+    </EndScreen>
   )
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <main className="mx-auto flex min-h-dvh max-w-[600px] flex-col justify-center px-6 text-center">{children}</main>
+}
+
+/**
+ * Shown in place of the form when nobody is signed in. Carries the form's slug
+ * through to /login so signing in returns here rather than dumping the voter on
+ * the creator dashboard — they arrived from a share link and want the form.
+ */
+function SignInGate({ slug }: { slug: string }) {
+  return (
+    <Centered>
+      <h1 className="text-xl font-semibold">Sign in to respond</h1>
+      <p className="mt-2 text-[15px] leading-relaxed text-muted">
+        Responses are one per person, so this form needs your{' '}
+        <span className="font-medium text-ink">{ALLOWED_EMAIL_DOMAIN}</span> account. You&rsquo;ll come
+        straight back here.
+      </p>
+      <Link
+        href={`/login?next=${encodeURIComponent(`/f/${slug}`)}`}
+        className="mx-auto mt-6 inline-block rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
+      >
+        Sign in
+      </Link>
+    </Centered>
+  )
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Retune } from 'retune'
 import { GeistSans } from 'geist/font/sans'
+import { GeistPixelSquare } from 'geist/font/pixel'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -13,7 +14,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${GeistSans.variable} h-full antialiased`}>
+    <html lang="en" className={`${GeistSans.variable} ${GeistPixelSquare.variable} h-full antialiased`}>
       <body className="min-h-full">
         {children}
         {/* Retune visual-editing overlay — renders in development only. Press

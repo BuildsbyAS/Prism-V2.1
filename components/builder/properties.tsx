@@ -1,13 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
+import { useEffect, useState } from 'react'
+import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
 import { WIDGET_META, PAGE_META, MAX_WIDGETS } from '@/lib/builder'
 import { EMBED_TYPE_LABEL } from '@/lib/embed'
-import { imageAdjustStyle } from '@/lib/image'
-import { HERO_GRADIENTS, HERO_SOLIDS, hasHeroBg, isCustomHeroBg } from '@/lib/hero'
+import { HERO_GRADIENTS, HERO_SOLIDS, hasHeroBg, isCustomHeroBg, isHeroGradient } from '@/lib/hero'
 import { Field, Toggle, TextInput, NumberInput } from './controls'
-import HoverHighlight from '@/components/HoverHighlight'
 
 function Group({ title, className = '', children }: { title?: string; className?: string; children: React.ReactNode }) {
   return (
@@ -27,25 +25,43 @@ export function EmptyProperties({ note }: { note: string }) {
 // Slider is hidden for now; Text leads, then Rating, then Voice.
 const WIDGET_TYPES: readonly WidgetType[] = ['text', 'rating', 'voice']
 
+const PAGE_TYPES: PageType[] = ['feedback', 'static']
+
 export function PageProperties({
   page,
-  optionFull,
+  widgets,
   widgetsFull,
+  selectedInputKey,
+  onSelectInput,
+  onChangeInputType,
+  inputSettings,
   flash,
-  onAddOption,
+  onChangeType,
   onAddInput,
   onDeletePage,
+  lastPage = false,
+  canClear = true,
   onFlashDone,
 }: {
   page: Page
-  optionFull: boolean
+  /** This page's feedback inputs, listed under "Feedback inputs". */
+  widgets: Widget[]
   widgetsFull: boolean
+  selectedInputKey: string | null
+  onSelectInput: (key: string) => void
+  onChangeInputType: (key: string, type: WidgetType) => void
+  /** The selected input's settings, rendered indented under its row. */
+  inputSettings?: React.ReactNode
   // Bumped when the canvas "add feedback widget" slot is clicked — flashes the
   // Feedback inputs picker to point the user at the draggable input types.
   flash: boolean
-  onAddOption: () => void
+  onChangeType: (t: PageType) => void
   onAddInput: (t: WidgetType) => void
   onDeletePage: () => void
+  /** This is the form's only page: it can be emptied, not removed. */
+  lastPage?: boolean
+  /** False when clearing would do nothing — the page is already empty. */
+  canClear?: boolean
   onFlashDone: () => void
 }) {
   const feedback = page.type === 'feedback'
@@ -56,37 +72,131 @@ export function PageProperties({
   }, [flash, onFlashDone])
   return (
     <>
-      <Group title={PAGE_META[page.type].label}>
+      {/* Page type lives here rather than being asked for when the page is added,
+          so it stays changeable. Every group below keys off it. Switching to
+          static only hides a page's inputs — they come back if you switch back,
+          so a mis-click costs nothing. */}
+      <Group title="Page type">
+        <div className="grid grid-cols-2 gap-1.5">
+          {PAGE_TYPES.map((t) => {
+            const selected = page.type === t
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => onChangeType(t)}
+                aria-pressed={selected}
+                className={`flex flex-col items-center gap-1 rounded-xl border px-2.5 py-2.5 text-center transition ${
+                  selected ? 'border-ink bg-black/[0.04]' : 'border-line-strong hover:bg-black/[0.03]'
+                }`}
+              >
+                <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">
+                  {PAGE_META[t].glyph}
+                </span>
+                <span className="text-[13px] font-medium leading-tight">{PAGE_META[t].label}</span>
+              </button>
+            )
+          })}
+        </div>
         <p className="text-[13px] leading-relaxed text-muted">{PAGE_META[page.type].hint}.</p>
       </Group>
-      <Group title={feedback ? 'Options' : 'Media'}>
-        <button
-          type="button"
-          disabled={optionFull}
-          onClick={onAddOption}
-          className="w-full rounded-xl border border-line-strong py-2 text-[13px] font-medium text-ink transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          + Add {feedback ? 'option' : 'media'}
-        </button>
-        <p className="text-[13px] text-muted">Up to 4.</p>
-      </Group>
+      {/* Neither page type gets an add button here: the canvas ends its grid with
+          an "+ Add option" / "+ Add media" card sitting exactly where the new
+          one appears, so a second button in this rail is the same action twice,
+          further from the thing it affects. */}
+      {/* The page's inputs are listed here, and the selected one's settings open
+          indented underneath its row. Selecting an input used to replace this
+          whole panel with the input's config, which hid the page it belongs to
+          and made "where am I" a question — the panel now stays put and only
+          grows a branch. */}
       {feedback && (
         <Group title="Feedback inputs" className={flash ? 'u-flash' : ''}>
-          <AddInputMenu full={widgetsFull} onAdd={onAddInput} />
-          {widgetsFull && <p className="text-[13px] text-muted">{MAX_WIDGETS === 1 ? 'One input per page.' : `Up to ${MAX_WIDGETS} inputs.`}</p>}
-          <p className="text-[13px] leading-relaxed text-muted">Select an option or input in the canvas to configure it.</p>
+          {widgets.map((w) => {
+            const open = selectedInputKey === w.id
+            return (
+              <div key={w.id}>
+                {/* This row *is* the type control — a transparent native select
+                    laid over it, the same trick the custom-colour swatch uses.
+                    It read as a dropdown (it has the chevron) while a second
+                    "Type" field inside the settings did the actual switching:
+                    two controls, one job. Focusing it also selects the input, so
+                    touching the row opens its settings underneath. */}
+                <div
+                  // Pointer selects, focus covers the keyboard: the settings have
+                  // to open on the way *in* to the row, not only once the native
+                  // menu has been dealt with.
+                  onMouseDown={() => onSelectInput(w.id)}
+                  className={`relative flex items-center gap-2 rounded-xl border px-3 py-2 transition ${
+                    open ? 'border-ink bg-black/[0.04]' : 'border-line-strong hover:bg-black/[0.03]'
+                  }`}
+                >
+                  <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">
+                    {WIDGET_META[w.type].glyph}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{WIDGET_META[w.type].label}</span>
+                  <span aria-hidden="true" className="flex-none text-[13px] leading-none text-muted">
+                    ⌄
+                  </span>
+                  <select
+                    value={w.type}
+                    aria-label="Feedback input type"
+                    onFocus={() => onSelectInput(w.id)}
+                    onChange={(e) => onChangeInputType(w.id, e.target.value as WidgetType)}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  >
+                    {WIDGET_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {WIDGET_META[t].label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {open && inputSettings && (
+                  // The rule is the indent: it ties the settings to the row they
+                  // belong to, so a long config still reads as part of this input.
+                  <div className="ml-3 mt-2.5 border-l border-line pl-3.5">{inputSettings}</div>
+                )}
+              </div>
+            )
+          })}
+          {!widgetsFull && <AddInputMenu full={widgetsFull} onAdd={onAddInput} />}
+          {widgetsFull && (
+            <p className="text-[13px] text-muted">{MAX_WIDGETS === 1 ? 'One input per page.' : `Up to ${MAX_WIDGETS} inputs.`}</p>
+          )}
         </Group>
       )}
       <Group>
-        <DeleteButton label="Delete page" onDelete={onDeletePage} />
+        {/* The confirmation lives in the builder, so it can decide from the
+            page's contents whether to ask at all — and, on the last page, offer
+            to empty it instead of removing it. */}
+        <DeleteButton
+          label={lastPage ? 'Clear page' : 'Delete page'}
+          onDelete={onDeletePage}
+          immediate
+          disabled={lastPage && !canClear}
+        />
+        {lastPage && (
+          <p className="text-[13px] leading-relaxed text-muted">
+            {canClear
+              ? 'A form needs one page, so this one can only be emptied. Add another page to delete it.'
+              : 'A form needs one page. This one is already empty.'}
+          </p>
+        )}
       </Group>
     </>
   )
 }
 
+/**
+ * The three input types, laid out and styled exactly like the Page type picker
+ * above: one row of equal tiles, glyph over label. They're the same kind of
+ * choice — pick a shape for this thing — so they shouldn't look like a different
+ * kind of control two sections apart. Three across also fits the rail, where the
+ * old two-column list left Voice stranded on a second row on its own.
+ */
 function AddInputMenu({ full, onAdd }: { full: boolean; onAdd: (t: WidgetType) => void }) {
   return (
-    <HoverHighlight className="grid grid-cols-2 gap-2" radius={12}>
+    <div className="grid grid-cols-3 gap-1.5">
       {WIDGET_TYPES.map((t) => (
         <button
           key={t}
@@ -95,15 +205,14 @@ function AddInputMenu({ full, onAdd }: { full: boolean; onAdd: (t: WidgetType) =
           onClick={() => onAdd(t)}
           draggable={!full}
           onDragStart={(e) => e.dataTransfer.setData('widget-type', t)}
-          data-hl
           title="Click to add, or drag onto the widget slot"
-          className="relative flex cursor-grab items-center gap-2 rounded-xl border border-line-strong px-3 py-2 text-left transition active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex cursor-grab flex-col items-center gap-1 rounded-xl border border-line-strong px-2.5 py-2.5 text-center transition hover:bg-black/[0.03] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">{WIDGET_META[t].glyph}</span>
-          <span className="text-[13px] font-medium">{WIDGET_META[t].label}</span>
+          <span className="grid h-6 w-6 place-items-center rounded-lg bg-black/[0.06] text-[13px] font-bold">{WIDGET_META[t].glyph}</span>
+          <span className="text-[13px] font-medium leading-tight">{WIDGET_META[t].label}</span>
         </button>
       ))}
-    </HoverHighlight>
+    </div>
   )
 }
 
@@ -113,12 +222,16 @@ const ALT_MAX = 125
 
 export function OptionProperties({
   option,
+  heading,
   onChange,
   onDelete,
   onOpenMedia,
   allowDecorative = false,
 }: {
   option: Option
+  /** Names the option these settings belong to — they now sit below the page's
+   *  own properties rather than replacing them, so they have to say whose. */
+  heading?: string
   onChange: (p: Partial<Option>) => void
   onDelete: () => void
   onOpenMedia: () => void
@@ -128,6 +241,11 @@ export function OptionProperties({
 }) {
   return (
     <>
+      {heading && (
+        <p className="border-b border-line bg-black/[0.02] px-4 py-2.5 text-[13px] font-semibold tracking-tight">
+          {heading}
+        </p>
+      )}
       <Group title="Media">
         <div className="flex items-center justify-between gap-2 rounded-xl border border-line px-3.5 py-2.5">
           <span className="text-[13px] font-medium">
@@ -165,11 +283,10 @@ export function OptionProperties({
         </Group>
       )}
 
+      {/* No focal-point picker: it steered a 4:3 crop that no longer happens —
+          media is contained everywhere now, so there is nothing to re-centre. */}
       {option.embed_type === 'image' && option.embed_url && (
         <>
-          <Group title="Focal point">
-            <FocalPicker option={option} onChange={onChange} />
-          </Group>
           <Group title="Brightness">
             <div className="flex items-center gap-3">
               <input
@@ -195,94 +312,28 @@ export function OptionProperties({
   )
 }
 
-function FocalPicker({ option, onChange }: { option: Option; onChange: (p: Partial<Option>) => void }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const dragging = useRef(false)
-
-  function setPoint(e: React.PointerEvent) {
-    const el = ref.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    const x = Math.round(Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100)))
-    const y = Math.round(Math.min(100, Math.max(0, ((e.clientY - r.top) / r.height) * 100)))
-    onChange({ focal_x: x, focal_y: y })
-  }
-
-  return (
-    <div>
-      <div
-        ref={ref}
-        onPointerDown={(e) => {
-          dragging.current = true
-          e.currentTarget.setPointerCapture(e.pointerId)
-          setPoint(e)
-        }}
-        onPointerMove={(e) => dragging.current && setPoint(e)}
-        onPointerUp={(e) => {
-          dragging.current = false
-          e.currentTarget.releasePointerCapture(e.pointerId)
-        }}
-        className="relative aspect-[4/3] w-full cursor-crosshair select-none overflow-hidden rounded-2xl border border-line"
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={option.embed_url}
-          alt=""
-          draggable={false}
-          className="h-full w-full object-cover"
-          style={imageAdjustStyle(option.focal_x, option.focal_y, option.brightness)}
-        />
-        <span
-          className="pointer-events-none absolute h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1.5px_rgba(0,0,0,0.35)] transition-[left,top] duration-75"
-          style={{ left: `${option.focal_x}%`, top: `${option.focal_y}%` }}
-        >
-          <span className="absolute inset-[5px] rounded-full border border-white/70" />
-        </span>
-      </div>
-      <button
-        type="button"
-        onClick={() => onChange({ focal_x: 50, focal_y: 50 })}
-        className="mt-2 w-full rounded-xl border border-line-strong py-1.5 text-[13px] font-medium text-muted transition hover:bg-black/[0.03] hover:text-ink"
-      >
-        Reset
-      </button>
-    </div>
-  )
-}
-
 /* ------------------------------ Input config ----------------------------- */
 
 export function InputProperties({
   widget,
   onChange,
-  onChangeType,
   onDelete,
 }: {
   widget: Widget
   onChange: (p: Partial<Widget>) => void
-  onChangeType: (t: WidgetType) => void
   onDelete: () => void
 }) {
   const c = widget.config
   const setConfig = (patch: Partial<typeof c>) => onChange({ config: { ...c, ...patch } })
 
+  // Bare blocks, not `Group`s: this only ever renders indented inside the page's
+  // "Feedback inputs" group, where a second set of section rules and headings
+  // would read as siblings of the page's own sections rather than a branch off
+  // one row. The row above it names the input *and* switches its type, so there
+  // is no Type field here — it would be the second control for the same job.
   return (
-    <>
-      <Group title={WIDGET_META[widget.type].label}>
-        <Field label="Type">
-          <select
-            value={widget.type}
-            onChange={(e) => onChangeType(e.target.value as WidgetType)}
-            className="w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm outline-none focus:border-ink"
-          >
-            {WIDGET_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {WIDGET_META[t].label}
-              </option>
-            ))}
-          </select>
-        </Field>
-
+    <div className="space-y-3">
+      <div className="space-y-3">
         {widget.type === 'rating' && (
           <Toggle checked={Boolean(c.allowHalf)} onChange={(allowHalf) => setConfig({ allowHalf })} label="Allow half stars" hint="Let voters pick half-star ratings (e.g. 3.5)." />
         )}
@@ -300,9 +351,9 @@ export function InputProperties({
         {widget.type === 'text' && (
           <Field label="Placeholder"><TextInput value={c.placeholder ?? ''} onChange={(e) => setConfig({ placeholder: e.target.value })} /></Field>
         )}
-      </Group>
+      </div>
 
-      <Group title="Options">
+      <div className="space-y-3 border-t border-line pt-3">
         <Toggle
           checked={c.showTitle !== false}
           onChange={(showTitle) => setConfig({ showTitle })}
@@ -314,14 +365,29 @@ export function InputProperties({
           <Toggle checked={Boolean(c.long)} onChange={(long) => setConfig({ long })} label="Long answer" hint="A paragraph box instead of one line." />
         )}
         <DeleteButton label="Delete input" onDelete={onDelete} />
-      </Group>
-    </>
+      </div>
+    </div>
   )
 }
 
-function DeleteButton({ label, onDelete }: { label: string; onDelete: () => void }) {
+function DeleteButton({
+  label,
+  onDelete,
+  /**
+   * Skip the inline "are you sure" step. Used where the caller runs its own
+   * confirmation (deleting a page opens a dialog when the page has content),
+   * so the creator isn't asked to confirm twice.
+   */
+  immediate = false,
+  disabled = false,
+}: {
+  label: string
+  onDelete: () => void
+  immediate?: boolean
+  disabled?: boolean
+}) {
   const [confirming, setConfirming] = useState(false)
-  if (confirming) {
+  if (confirming && !immediate) {
     return (
       <div className="flex items-center gap-2">
         <button type="button" onClick={onDelete} className="flex-1 rounded-xl bg-red-600 py-2 text-[13px] font-semibold text-white transition hover:opacity-90">
@@ -334,7 +400,12 @@ function DeleteButton({ label, onDelete }: { label: string; onDelete: () => void
     )
   }
   return (
-    <button type="button" onClick={() => setConfirming(true)} className="w-full rounded-xl border border-line-strong py-2 text-[13px] font-medium text-red-600 transition hover:bg-black/[0.03]">
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => (immediate ? onDelete() : setConfirming(true))}
+      className="w-full rounded-xl border border-line-strong py-2 text-[13px] font-medium text-red-600 transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:text-muted disabled:hover:bg-transparent"
+    >
       {label}
     </button>
   )
@@ -388,7 +459,17 @@ function Swatch({
   )
 }
 
-function HeroBackdropField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function HeroBackdropField({
+  value,
+  onChange,
+  dither,
+  onDitherChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+  dither: boolean
+  onDitherChange: (v: boolean) => void
+}) {
   const custom = isCustomHeroBg(value)
   return (
     <Group title="Media backdrop">
@@ -401,6 +482,17 @@ function HeroBackdropField({ value, onChange }: { value: string; onChange: (v: s
             ))}
           </div>
         </div>
+
+        {/* Only meaningful over a gradient — a flat fill has no banding to break
+            up — so the control appears with the thing it affects. */}
+        {isHeroGradient(value) && (
+          <Toggle
+            checked={dither !== false}
+            onChange={onDitherChange}
+            label="Dither texture"
+            hint="Pixel and character stipple over the gradient."
+          />
+        )}
 
         <div>
           <p className="mb-1.5 text-[13px] text-muted">Solids</p>
@@ -452,7 +544,14 @@ function HeroBackdropField({ value, onChange }: { value: string; onChange: (v: s
 export function WelcomeProperties({ form, onChange }: { form: Form; onChange: (p: Partial<Form>) => void }) {
   return (
     <>
-      {form.hero_image_url && <HeroBackdropField value={form.hero_bg} onChange={(v) => onChange({ hero_bg: v })} />}
+      {form.hero_image_url && (
+        <HeroBackdropField
+          value={form.hero_bg}
+          onChange={(v) => onChange({ hero_bg: v })}
+          dither={form.hero_dither}
+          onDitherChange={(v) => onChange({ hero_dither: v })}
+        />
+      )}
       <Group>
         <Toggle
           checked={form.show_time_estimate}
