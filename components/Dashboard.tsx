@@ -161,8 +161,9 @@ function toListItems(
 }
 
 /**
- * Where an entry's broad click target goes: the builder for your own, the real
- * shared form for someone else's.
+ * Where an entry's broad click target goes. Team is the shared workspace, so
+ * every broad Team click opens the real voter link — including your own forms.
+ * My Forms keeps the creator destinations below.
  *
  * Your own closed form opens its results instead of the builder — it can't be
  * edited any more (see the builder's read-only mode), so what's left to do with
@@ -171,7 +172,8 @@ function toListItems(
  * Preview is intentionally absent here: it has its own explicit button. A click
  * on the artwork, card body, or list row should mean "open what was shared".
  */
-function entryHref(item: ListItem): string {
+function entryHref(item: ListItem, tab: DashboardTab): string {
+  if (tab === 'team') return `/f/${item.form.slug}`
   if (!item.creator || item.creator.mine) {
     return item.form.status === 'closed'
       ? `/creator/${item.form.id}/results`
@@ -503,7 +505,7 @@ function Workspace({
       ) : view === 'card' ? (
         <div className="u-stagger mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visible.map((item) => (
-            <FormCard key={item.form.id} item={item} viewerEmail={viewerEmail} onDelete={onDelete} onRename={onRename} />
+            <FormCard key={item.form.id} item={item} tab={tab} viewerEmail={viewerEmail} onDelete={onDelete} onRename={onRename} />
           ))}
         </div>
       ) : (
@@ -604,12 +606,13 @@ function CardMeta({ label, children }: { label: string; children: React.ReactNod
   )
 }
 
-function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; viewerEmail: string | null; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
+function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListItem; tab: DashboardTab; viewerEmail: string | null; onDelete?: (id: string) => void; onRename?: (id: string, name: string) => void }) {
   const { form, responseCount, creator, hasResponded = false } = item
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const title = formTitle(form)
-  const href = entryHref(item)
+  const href = entryHref(item, tab)
+  const opensSharedForm = tab === 'team'
   const mine = !creator || creator.mine
   // font-sans opts out of the global pixel heading rule — form titles are
   // content, not display type, so they read better in Geist Sans.
@@ -660,6 +663,8 @@ function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; v
           the outer radius leaves a hairline of card showing at the corners. */}
       <Link
         href={href}
+        target={opensSharedForm ? '_blank' : undefined}
+        rel={opensSharedForm ? 'noopener noreferrer' : undefined}
         aria-label={title}
         className="block aspect-[17/6] w-full overflow-hidden rounded-t-[19px] bg-black/[0.03]"
       >
@@ -741,7 +746,12 @@ function FormCard({ item, viewerEmail, onDelete, onRename }: { item: ListItem; v
             />
           </div>
         ) : (
-          <Link href={href} className="mt-3">
+          <Link
+            href={href}
+            target={opensSharedForm ? '_blank' : undefined}
+            rel={opensSharedForm ? 'noopener noreferrer' : undefined}
+            className="mt-3"
+          >
             {body}
           </Link>
         )}
@@ -800,7 +810,8 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
   const [renaming, setRenaming] = useState(false)
   const title = formTitle(form)
   const expiry = expiryLabel(form.expires_at)
-  const href = entryHref(item)
+  const href = entryHref(item, tab)
+  const opensSharedForm = tab === 'team'
   const mine = !creator || creator.mine
   const body = (
     <>
@@ -854,7 +865,12 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
           />
         </div>
       ) : (
-        <Link href={href} className="min-w-0 before:absolute before:inset-0 before:content-['']">
+        <Link
+          href={href}
+          target={opensSharedForm ? '_blank' : undefined}
+          rel={opensSharedForm ? 'noopener noreferrer' : undefined}
+          className="min-w-0 before:absolute before:inset-0 before:content-['']"
+        >
           {body}
         </Link>
       )}
