@@ -54,6 +54,7 @@ export type ListedForm = Pick<
   | 'hero_image_url'
   | 'hero_bg'
   | 'hero_dither'
+  | 'show_results_to_voters'
 >
 
 export interface TeamForm {
@@ -64,6 +65,8 @@ export interface TeamForm {
   creatorEmail: string
   /** True when the viewer is the creator, so the list can offer Edit/Results. */
   mine: boolean
+  /** True when the signed-in viewer has already submitted this form. */
+  hasResponded: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +242,8 @@ interface TeamRow {
   hero_bg?: string | null
   hero_dither?: boolean | null
   collaborators?: string[] | null
+  show_results_to_voters?: boolean | null
+  viewer_has_responded?: boolean | null
 }
 
 /** Demo mode has no accounts, so a creator id doubles as their address. */
@@ -251,11 +256,10 @@ function demoCreatorEmail(creatorId: string): string {
  * newest first. This is the dashboard's Team tab.
  *
  * In Supabase mode it goes through a `security definer` RPC rather than a query,
- * because RLS deliberately hides all three ingredients: `forms` exposes only
- * open rows to non-owners, `responses` is owner-read, and `auth.users` isn't
- * readable at all. The RPC hands back one aggregate row per form — a tally and
- * an author, never an individual response — and grants no read on the form
- * itself, so a closed form stays closed at /f/[slug].
+ * because RLS deliberately hides two ingredients: `responses` is owner/own-read
+ * and `auth.users` isn't readable at all. The RPC hands back one aggregate row
+ * per form — a tally, author, and the viewer's own submitted/not-submitted bit,
+ * never an individual response.
  */
 export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm[]> {
   if (isSupabaseConfigured && supabase) {
@@ -276,12 +280,14 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         hero_image_url: r.hero_image_url ?? '',
         hero_bg: r.hero_bg ?? 'none',
         hero_dither: r.hero_dither ?? true,
+        show_results_to_voters: r.show_results_to_voters ?? false,
       },
       // count() arrives as a bigint, which PostgREST may serialise as a string.
       responseCount: Number(r.response_count ?? 0),
       lastResponseAt: r.last_response_at,
       creatorEmail: r.creator_email ?? '',
       mine: r.creator_id === viewerId,
+      hasResponded: r.viewer_has_responded ?? false,
     }))
   }
 
@@ -304,6 +310,15 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         lastResponseAt: last,
         creatorEmail: demoCreatorEmail(form.creator_id),
         mine: form.creator_id === viewerId,
+        hasResponded: Boolean(
+          typeof window !== 'undefined' &&
+            window.localStorage.getItem(`prism-session:${form.slug}`) &&
+            rs.some(
+              (response) =>
+                response.voter_session_id ===
+                window.localStorage.getItem(`prism-session:${form.slug}`),
+            ),
+        ),
       }
     })
 }

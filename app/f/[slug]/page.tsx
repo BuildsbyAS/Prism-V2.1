@@ -314,12 +314,12 @@ export default function VoterPage() {
   // Animate on screen change (welcome ↔ vote ↔ done); submitting stays on vote.
   const screen = phase === 'submitting' ? 'vote' : phase
 
-  // The overline names the form — it's the one thing on screen that stays put
-  // across the welcome, vote and thank-you screens. It used to print `title`,
+  // The overline names the form across the welcome and vote screens. It used to print `title`,
   // which is the welcome *headline*, so it read as a duplicate of the <h1>
   // directly beneath it. It shows the creator's name for the form instead.
   //
-  // An unnamed form is still known by its headline (see formName), so on the
+  // The thank-you screen deliberately omits it: the response confirmation is
+  // the only identity it needs. An unnamed form is still known by its headline (see formName), so on the
   // welcome screen that fallback would reintroduce the very duplicate — there,
   // and only there, a neutral label stands in.
   const named = formName(form)
@@ -515,7 +515,9 @@ export default function VoterPage() {
     // to top-aligned + scrollable when the content is taller than the viewport.
     <main className="flex min-h-dvh w-full flex-col">
     <div className="mx-auto my-auto w-full max-w-[900px] px-4 py-10 sm:py-14">
-      <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+      {phase !== 'done' && (
+        <p className="truncate text-[14px] font-medium text-muted">{overline}</p>
+      )}
 
       <div key={screen} className="u-rise">
       {/* ------------------------------ Welcome ----------------------------- */}

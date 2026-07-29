@@ -155,7 +155,9 @@ create policy "read pages" on public.pages for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write pages" on public.pages;
 create policy "owner write pages" on public.pages for all
@@ -171,7 +173,9 @@ drop policy if exists "read open forms" on public.forms;
 create policy "read open forms" on public.forms for select
   to anon, authenticated
   using (status = 'open' or creator_id = auth.uid()
-         or public.is_editor(creator_id, collaborators));
+         or public.is_editor(creator_id, collaborators)
+         or (status = 'closed' and auth.uid() is not null
+             and public.is_noon_user()));
 
 drop policy if exists "owner insert forms" on public.forms;
 create policy "owner insert forms" on public.forms for insert
@@ -197,7 +201,9 @@ create policy "read options" on public.options for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write options" on public.options;
 create policy "owner write options" on public.options for all
@@ -213,7 +219,9 @@ create policy "read widgets" on public.widgets for select
   using (exists (select 1 from public.forms f
                  where f.id = form_id
                    and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators))));
+                        or public.is_editor(f.creator_id, f.collaborators)
+                        or (f.status = 'closed' and auth.uid() is not null
+                            and public.is_noon_user()))));
 
 drop policy if exists "owner write widgets" on public.widgets;
 create policy "owner write widgets" on public.widgets for all
@@ -427,9 +435,9 @@ grant execute on function public.form_voters(uuid) to authenticated;
 -- Every published form in the workspace — open and closed, by any creator —
 -- with the dashboard metadata, response tally, and author needed by Team.
 --
--- RLS deliberately hides closed forms, other creators' response rows, and
--- auth.users. This narrowly scoped security-definer function returns one
--- aggregate row per form without granting access to any of those source rows.
+-- RLS deliberately hides other creators' response rows and auth.users. This
+-- narrowly scoped security-definer function returns one aggregate row per form
+-- without granting access to either of those source sets.
 -- The caller must be an authenticated workspace user; anonymous clients cannot
 -- execute it.
 drop function if exists public.team_forms();
@@ -449,6 +457,8 @@ returns table (
   hero_image_url    text,
   hero_bg           text,
   hero_dither       boolean,
+  show_results_to_voters boolean,
+  viewer_has_responded boolean,
   response_count    bigint,
   last_response_at  timestamptz
 )
@@ -471,6 +481,8 @@ as $$
          f.hero_image_url,
          f.hero_bg,
          f.hero_dither,
+         f.show_results_to_voters,
+         coalesce(bool_or(r.voter_id = auth.uid()), false),
          count(r.id),
          max(r.submitted_at)
     from public.forms f
