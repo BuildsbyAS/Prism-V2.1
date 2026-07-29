@@ -30,6 +30,8 @@ export interface DashboardForm {
   form: Form
   responseCount: number
   lastResponseAt: string | null
+  /** Collaborators can edit; only the creator can permanently delete. */
+  isOwner: boolean
 }
 
 /**
@@ -175,15 +177,26 @@ function writeDemo(db: DemoDB): void {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** All of the current creator's forms with response stats, newest first. */
-export async function getDashboard(creatorId = DEMO_CREATOR_ID): Promise<DashboardForm[]> {
+/** Forms the current user owns or collaborates on, with response stats. */
+export async function getDashboard(
+  creatorId = DEMO_CREATOR_ID,
+  viewerEmail = DEMO_CREATOR_EMAIL,
+): Promise<DashboardForm[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data: forms, error } = await supabase
-      .from('forms')
-      .select('*')
-      .eq('creator_id', creatorId)
-      .order('created_at', { ascending: false })
-    if (error) throw error
+    const ownQuery = supabase.from('forms').select('*').eq('creator_id', creatorId)
+    const collaboratorQuery = viewerEmail
+      ? supabase.from('forms').select('*').contains('collaborators', [viewerEmail.toLowerCase()])
+      : Promise.resolve({ data: [], error: null })
+    const [owned, shared] = await Promise.all([ownQuery, collaboratorQuery])
+    if (owned.error) throw owned.error
+    if (shared.error) throw shared.error
+    const byId = new Map<string, Form>()
+    for (const row of [...(owned.data ?? []), ...(shared.data ?? [])]) {
+      byId.set(row.id, row as Form)
+    }
+    const forms = [...byId.values()].sort((a, b) =>
+      a.created_at < b.created_at ? 1 : -1,
+    )
     const ids = (forms ?? []).map((f) => f.id)
     const counts: Record<string, { n: number; last: string | null }> = {}
     if (ids.length) {
@@ -197,16 +210,23 @@ export async function getDashboard(creatorId = DEMO_CREATOR_ID): Promise<Dashboa
         if (!c.last || r.submitted_at > c.last) c.last = r.submitted_at
       }
     }
-    return (forms ?? []).map((form) => ({
-      form: form as Form,
+    return forms.map((form) => ({
+      form,
       responseCount: counts[form.id]?.n ?? 0,
       lastResponseAt: counts[form.id]?.last ?? null,
+      isOwner: form.creator_id === creatorId,
     }))
   }
 
   const db = readDemo()
   return db.forms
-    .filter((f) => f.creator_id === creatorId)
+    .filter(
+      (f) =>
+        f.creator_id === creatorId ||
+        (f.collaborators ?? []).some(
+          (email) => email.toLowerCase() === viewerEmail.toLowerCase(),
+        ),
+    )
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .map((form) => {
       const rs = db.responses.filter((r) => r.form_id === form.id)
@@ -214,7 +234,12 @@ export async function getDashboard(creatorId = DEMO_CREATOR_ID): Promise<Dashboa
         (acc, r) => (!acc || r.submitted_at > acc ? r.submitted_at : acc),
         null,
       )
-      return { form, responseCount: rs.length, lastResponseAt: last }
+      return {
+        form,
+        responseCount: rs.length,
+        lastResponseAt: last,
+        isOwner: form.creator_id === creatorId,
+      }
     })
 }
 
@@ -352,21 +377,29 @@ export async function getKnownPeople(): Promise<string[]> {
 }
 
 /**
- * One entry per form that has responses the creator hasn't looked at yet.
+ * Form lifecycle and collaboration activity shown in the Updates menu.
  *
- * Derived from the responses themselves rather than stored as its own table:
- * "unread" is just `submitted_at > forms.responses_seen_at`, so there is no
- * notification state to keep in sync with reality, and it works the same in both
- * backends. Opening a form's results moves that watermark (markResponsesSeen).
+ * Supabase stores one row per recipient/event so creators and collaborators
+ * have independent read state. Demo mode retains its lightweight response
+ * watermark and maps those counts into the same UI shape.
  */
+export type NotificationEventType =
+  | 'form_published'
+  | 'vote_received'
+  | 'collaborator_added'
+  | 'collaborator_removed'
+  | 'form_expired'
+  | 'final_results'
+
 export interface FormUpdate {
+  id: string
   formId: string
   title: string
-  status: FormStatus
-  /** Responses submitted since the creator last opened this form's results. */
-  newCount: number
-  /** Timestamp of the newest unread response — what the list sorts on. */
-  lastResponseAt: string
+  message: string
+  eventType: NotificationEventType
+  actionPath: string | null
+  createdAt: string
+  readAt: string | null
 }
 
 function buildUpdates(
@@ -391,24 +424,44 @@ function buildUpdates(
 
   return [...acc.entries()]
     .map(([formId, { n, last }]) => ({
+      id: `demo-votes:${formId}`,
       formId,
-      title: formName(byForm.get(formId)!) || 'Untitled form',
-      status: byForm.get(formId)!.status,
-      newCount: n,
-      lastResponseAt: last,
+      title: n === 1 ? 'New vote received' : 'New votes received',
+      message: `“${formName(byForm.get(formId)!) || 'Untitled form'}” received ${n} new ${n === 1 ? 'response' : 'responses'}.`,
+      eventType: 'vote_received' as const,
+      actionPath: `/creator/${formId}/results`,
+      createdAt: last,
+      readAt: null,
     }))
-    .sort((a, b) => (a.lastResponseAt < b.lastResponseAt ? 1 : -1))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
 }
 
-/** Unread-response updates for the creator, newest first. */
+interface NotificationRow {
+  id: string
+  form_id: string | null
+  event_type: NotificationEventType
+  title: string
+  message: string
+  action_path: string | null
+  created_at: string
+  read_at: string | null
+}
+
+/** Recipient-specific form activity, newest first. */
 export async function getUpdates(creatorId = DEMO_CREATOR_ID): Promise<FormUpdate[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data: forms, error } = await supabase.from('forms').select('*').eq('creator_id', creatorId)
+    const { data, error } = await supabase.rpc('form_notifications')
     if (error) throw error
-    const ids = (forms ?? []).map((f) => f.id)
-    if (!ids.length) return []
-    const { data: resp } = await supabase.from('responses').select('form_id,submitted_at').in('form_id', ids)
-    return buildUpdates((forms ?? []) as Form[], resp ?? [])
+    return ((data ?? []) as NotificationRow[]).map((row) => ({
+      id: row.id,
+      formId: row.form_id ?? '',
+      eventType: row.event_type,
+      title: row.title,
+      message: row.message,
+      actionPath: row.action_path,
+      createdAt: row.created_at,
+      readAt: row.read_at,
+    }))
   }
 
   const db = readDemo()
@@ -422,7 +475,15 @@ export async function getUpdates(creatorId = DEMO_CREATOR_ID): Promise<FormUpdat
 export async function markResponsesSeen(formId: string): Promise<void> {
   const now = new Date().toISOString()
   if (isSupabaseConfigured && supabase) {
-    await supabase.from('forms').update({ responses_seen_at: now }).eq('id', formId)
+    await Promise.all([
+      supabase.from('forms').update({ responses_seen_at: now }).eq('id', formId),
+      supabase
+        .from('notifications')
+        .update({ read_at: now })
+        .eq('form_id', formId)
+        .eq('event_type', 'vote_received')
+        .is('read_at', null),
+    ])
     return
   }
   const db = readDemo()
@@ -434,12 +495,21 @@ export async function markResponsesSeen(formId: string): Promise<void> {
 export async function markAllResponsesSeen(creatorId = DEMO_CREATOR_ID): Promise<void> {
   const now = new Date().toISOString()
   if (isSupabaseConfigured && supabase) {
-    await supabase.from('forms').update({ responses_seen_at: now }).eq('creator_id', creatorId)
+    await supabase.from('notifications').update({ read_at: now }).is('read_at', null)
     return
   }
   const db = readDemo()
   db.forms = db.forms.map((f) => (f.creator_id === creatorId ? { ...f, responses_seen_at: now } : f))
   writeDemo(db)
+}
+
+/** Mark one notification read without affecting the rest of the form. */
+export async function markUpdateSeen(id: string): Promise<void> {
+  if (!isSupabaseConfigured || !supabase || id.startsWith('demo-')) return
+  await supabase
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('id', id)
 }
 
 async function loadFull(form: Form): Promise<FullForm> {

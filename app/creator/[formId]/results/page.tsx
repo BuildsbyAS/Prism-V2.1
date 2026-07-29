@@ -39,10 +39,17 @@ export default function ResultsPage() {
   const [voters, setVoters] = useState<FormVoter[] | null>(null)
   const [missing, setMissing] = useState(false)
 
-  // Whose form this is. The RPC behind getFormVoters enforces this server-side
-  // too — this only keeps the table's shell from rendering for someone who
-  // would get an empty list anyway.
-  const isCreator = Boolean(full && user && full.form.creator_id === user.id)
+  // The creator and named collaborators are editors. The RPC behind
+  // getFormVoters applies this same rule server-side; this controls the private
+  // results UI and editor navigation.
+  const isEditor = Boolean(
+    full &&
+      user &&
+      (full.form.creator_id === user.id ||
+        (full.form.collaborators ?? []).some(
+          (email) => email.toLowerCase() === user.email.toLowerCase(),
+        )),
+  )
 
   useEffect(() => {
     getFullForm(formId).then((f) => {
@@ -56,11 +63,11 @@ export default function ResultsPage() {
   }, [formId])
 
   useEffect(() => {
-    if (!isCreator) return
+    if (!isEditor) return
     getFormVoters(formId)
       .then(setVoters)
       .catch(() => setVoters([]))
-  }, [formId, isCreator])
+  }, [formId, isEditor])
 
   // A draft has never collected anything, so there is nothing here to read. The
   // tab is hidden for one (see hasResults), but the URL is still typeable and
@@ -72,7 +79,7 @@ export default function ResultsPage() {
           formId={formId}
           tab="results"
           name={formName(full.form)}
-          canEdit={isCreator}
+          canEdit={isEditor}
           canSeeResults={false}
           status={<StatusBadge status={full.form.status} />}
         />
@@ -92,7 +99,7 @@ export default function ResultsPage() {
     )
   }
 
-  if (full && !authLoading && !isCreator && !full.form.show_results_to_voters) {
+  if (full && !authLoading && !isEditor && !full.form.show_results_to_voters) {
     return (
       <>
         <FormHeader
@@ -142,7 +149,7 @@ export default function ResultsPage() {
         formId={formId}
         tab="results"
         name={full ? formName(full.form) : null}
-        canEdit={isCreator}
+        canEdit={isEditor}
         canSeeResults
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       />
@@ -293,10 +300,10 @@ export default function ResultsPage() {
               )
             })}
 
-            {/* Who responded — creator only, and last: it's the detail behind
+            {/* Who responded — editors only, and last: it's the detail behind
                 the charts, not the headline. A dozen rows of names above the
                 vote buried the answer the page exists to give. */}
-            {isCreator && voters && voters.length > 0 && <Respondents full={full} voters={voters} />}
+            {isEditor && voters && voters.length > 0 && <Respondents full={full} voters={voters} />}
           </div>
         )}
       </main>
@@ -306,8 +313,8 @@ export default function ResultsPage() {
 
 /**
  * Who responded, and what each of them picked. Only rendered for the form's
- * creator — and only populated for them either way, since the RPC behind it
- * checks ownership server-side.
+ * creator and collaborators — and only populated for editors either way, since
+ * the RPC behind it applies the same access check server-side.
  *
  * A column per Get Vote page rather than one merged "picks" cell: a form with
  * two comparisons is exactly when you want to see whether someone who chose A
@@ -326,9 +333,8 @@ function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) 
         <h2 className="font-sans text-sm font-semibold">
           Respondents <span className="ml-1 font-normal text-muted tabular-nums">{voters.length}</span>
         </h2>
-        {/* Said plainly: this is the one part of the page that names people, and
-            the creator should know it isn't shared. */}
-        <p className="text-[13px] text-muted">Only you can see this — voters and the Team feed can&rsquo;t.</p>
+        {/* Said plainly: this is the one part of the page that names people. */}
+        <p className="text-[13px] text-muted">Only form editors can see respondent details.</p>
       </div>
 
       {/* Scrolls sideways rather than crushing the columns: a form with several

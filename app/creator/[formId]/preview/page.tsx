@@ -91,8 +91,15 @@ export default function FormPreviewPage() {
     }
   }, [refresh])
 
-  // Someone else's form has no Editor tab — there is nothing behind it for you.
-  const canEdit = Boolean(full && user && full.form.creator_id === user.id)
+  // Editors include the creator and every named collaborator.
+  const canEdit = Boolean(
+    full &&
+      user &&
+      (full.form.creator_id === user.id ||
+        (full.form.collaborators ?? []).some(
+          (email) => email.toLowerCase() === user.email.toLowerCase(),
+        )),
+  )
   const publicPath = full ? `/f/${full.form.slug}` : null
 
   async function copyFormLink() {
