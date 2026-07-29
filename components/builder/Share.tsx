@@ -287,7 +287,7 @@ export function ShareDialog({
               <span className={attempted ? 'text-red-600' : undefined}>
                 {published
                   ? 'These changes can’t go live until the checklist is complete.'
-                  : 'Complete the introduction page and finish one Get Vote page to publish.'}
+                  : 'Complete the introduction page and every Get Vote page to publish.'}
               </span>
             ) : (
               published && (

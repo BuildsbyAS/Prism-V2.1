@@ -230,10 +230,13 @@ export function readiness(
   if (!form.body_copy.trim()) welcomeMissing.push('a subtitle')
   if (!form.hero_image_url.trim()) welcomeMissing.push('an image')
   const welcome = welcomeMissing.length === 0
-  // Specifically a *feedback* page: a form of nothing but static pages collects
-  // no answers, so publishing one would hand voters a link they can't respond
-  // to. Static pages are context for a comparison, never the whole form.
-  const middle = pages.some((p) => p.type === 'feedback' && pageReady(p, options, widgets))
+  // Every Get Vote page must be ready. Requiring only one allowed a second,
+  // half-written page into the live voter flow; requiring at least one also
+  // keeps a form made entirely of static context pages from publishing.
+  const feedbackPages = pages.filter((p) => p.type === 'feedback')
+  const middle =
+    feedbackPages.length > 0 &&
+    feedbackPages.every((p) => pageReady(p, options, widgets))
   const thankyou = Boolean(form.thank_you_message.trim())
   return { welcome, welcomeMissing, middle, thankyou, publishable: welcome && middle }
 }
@@ -251,6 +254,6 @@ export function publishBlocker(ready: Readiness, pages: Page[]): string | null {
   if (ready.publishable) return null
   if (!ready.welcome) return `Add ${listOut(ready.welcomeMissing)} to the introduction page before publishing.`
   return pages.some((p) => p.type === 'feedback')
-    ? 'Finish your Get Vote page — it needs a title and 2 options, or 1 option and a question.'
+    ? 'Finish every Get Vote page — each needs a title and 2 options, or 1 option and a question.'
     : 'Add at least one Get Vote page — a form needs one to collect responses.'
 }

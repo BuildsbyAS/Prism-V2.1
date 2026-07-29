@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { isAllowedEmail } from '@/lib/access'
 
 // NOTE: in this Next.js version the `middleware` file convention was renamed to
 // `proxy`. This runs before /creator routes render, refreshing the Supabase
@@ -34,8 +35,7 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
-  const email = user?.email?.toLowerCase() ?? ''
-  const allowed = Boolean(user) && email.endsWith('@noon.com')
+  const allowed = Boolean(user) && isAllowedEmail(user?.email)
 
   if (!allowed) {
     // Wrong domain but a live session → sign out so they aren't stuck.
