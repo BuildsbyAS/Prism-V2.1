@@ -96,6 +96,9 @@ export default function BuilderPage() {
   const rail = useRailWidth()
   const panel = usePanelWidth()
   const [publishedSnapshot, setPublishedSnapshot] = useState<string | null>(null)
+  // Incremented for each clean-state Publish click so repeated clicks restart
+  // the toast entrance instead of being swallowed by an already-true boolean.
+  const [upToDateToast, setUpToDateToast] = useState<number | null>(null)
   // Non-null when the last autosave failed — surfaced as a banner, because the
   // builder otherwise looks identical whether or not the write landed.
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -107,6 +110,7 @@ export default function BuilderPage() {
   const pending = useRef<{ form: Form; pages: Page[]; options: Option[]; widgets: Widget[] } | null>(null)
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const optionFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const upToDateTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
    * A closed form is a record, not a draft. The builder still opens — the
@@ -205,6 +209,7 @@ export default function BuilderPage() {
     () => () => {
       if (flashTimer.current) clearTimeout(flashTimer.current)
       if (optionFlashTimer.current) clearTimeout(optionFlashTimer.current)
+      if (upToDateTimer.current) clearTimeout(upToDateTimer.current)
     },
     [],
   )
@@ -547,6 +552,10 @@ export default function BuilderPage() {
   }
 
   function openPublish() {
+    if (published && !dirty) {
+      showUpToDateToast()
+      return
+    }
     const invalidScreen = firstPublishErrorScreen()
     if (invalidScreen) {
       setPublishErrorScreen(invalidScreen)
@@ -557,6 +566,12 @@ export default function BuilderPage() {
     setShareOpen(true)
   }
 
+  function showUpToDateToast() {
+    setUpToDateToast((version) => (version ?? 0) + 1)
+    if (upToDateTimer.current) clearTimeout(upToDateTimer.current)
+    upToDateTimer.current = setTimeout(() => setUpToDateToast(null), 2400)
+  }
+
   // Publish stays actionable so it can lead the creator to the first content
   // error. Release details live in the dialog, whose own action remains
   // clickable and reports missing fields inline.
@@ -564,8 +579,7 @@ export default function BuilderPage() {
     <button
       type="button"
       onClick={openPublish}
-      disabled={published && !dirty}
-      className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded-[16px] bg-ink px-4 py-1.5 font-medium text-white transition hover:opacity-90"
     >
       {publishLabel}
     </button>
@@ -893,7 +907,18 @@ export default function BuilderPage() {
       )}
 
       {shareOpen && (
-        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} onChange={patchForm} onPublish={publish} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
+        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} onChange={patchForm} onPublish={publish} onUpToDate={showUpToDateToast} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
+      )}
+
+      {upToDateToast !== null && (
+        <div
+          key={upToDateToast}
+          role="status"
+          aria-live="polite"
+          className="u-popover fixed bottom-6 left-1/2 z-[80] -translate-x-1/2 rounded-[14px] bg-ink px-4 py-2.5 text-[14px] font-medium text-white shadow-[0_12px_32px_-12px_rgba(0,0,0,0.45)]"
+        >
+          The form is up to date.
+        </div>
       )}
 
       {pageAction && (
