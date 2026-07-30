@@ -1,21 +1,68 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase, isSupabaseConfigured } from './supabase'
 import { DEMO_CREATOR_EMAIL } from './store'
+import type { Form, Option, Page, Widget } from './types'
 
 /** One person in a form's editor right now. */
 export interface PresencePeer {
   email: string
   /** Which screen they have open: 'welcome', 'end', or a page id. */
   screen: string
+  /**
+   * What they have selected, as a key the editor can match against its own
+   * selection — see `selectionKey`. Null while they have nothing selected.
+   */
+  selection: string | null
   /** True for the viewer's own entry — the stack shows you alongside everyone else. */
   self: boolean
 }
 
+/**
+ * A collaborator's claim on something, in their avatar's colour.
+ *
+ * The colour is the whole point: it's what ties an outline on the canvas to a
+ * face in the header, so "who is editing this" needs no explaining.
+ */
+export interface PeerMark {
+  color: string
+  /** First name — enough to tell two collaborators apart in a small tag. */
+  name: string
+}
+
+/**
+ * One change to the document, as it happens.
+ *
+ * Field patches carry only the keys that changed, so two people working on
+ * different fields of the same option don't overwrite each other. The `rows`
+ * forms carry a whole collection, which is what adding, deleting, duplicating
+ * and reordering all amount to.
+ *
+ * `reload` says "fetch it yourself": the escape hatch for an edit too big to put
+ * on the wire (a pasted data URL in demo mode) and for anything that needs a
+ * clean slate.
+ */
+export type DocEdit =
+  | { t: 'form'; patch: Partial<Form> }
+  | { t: 'page'; id: string; patch: Partial<Page> }
+  | { t: 'option'; id: string; patch: Partial<Option> }
+  | { t: 'widget'; id: string; patch: Partial<Widget> }
+  | { t: 'pages'; rows: Page[] }
+  | { t: 'options'; rows: Option[] }
+  | { t: 'widgets'; rows: Widget[] }
+  | { t: 'reload' }
+
 /** How often a tab says it's still here, and how long silence is tolerated. */
 const HEARTBEAT_MS = 4000
 const STALE_MS = 14000
+
+/**
+ * Supabase Realtime caps a broadcast payload (256KB). Demo mode's data URLs sail
+ * past that, so anything approaching it is sent as `reload` instead — the peer
+ * reads the change from storage rather than from the message.
+ */
+const MAX_EDIT_BYTES = 180_000
 
 /**
  * Demo mode has no accounts: every tab is the same stub creator, so presence
@@ -84,10 +131,12 @@ function newTabId(): string {
 }
 
 interface Wire {
-  type: 'here' | 'gone' | 'who'
+  type: 'here' | 'gone' | 'who' | 'edit'
   tabId: string
   email?: string
   screen?: string
+  selection?: string | null
+  edit?: DocEdit
 }
 
 interface Entry {
@@ -95,18 +144,19 @@ interface Entry {
   room: string
   email: string
   screen: string
+  selection: string | null
   /** Last heartbeat, ms — what actually decides whether a tab is still open. */
   at: number
 }
 
 /**
- * Who else is in this form's editor, and which screen each of them is on.
+ * The live side of a form's editor: who else is in it, where they are, and the
+ * edits they're making.
  *
- * Two transports behind one hook. With Supabase it's Realtime presence, which is
- * built for exactly this — a channel per form, one tracked entry per tab, and a
- * roster that arrives on every join and leave. In demo mode there is no server,
- * so tabs of the same browser gossip over a BroadcastChannel instead; that is
- * also what makes the feature demonstrable without a backend.
+ * Two transports behind one hook. With Supabase it's a Realtime channel —
+ * presence for the roster, broadcast for the edits. In demo mode there is no
+ * server, so tabs of the same browser gossip over a BroadcastChannel instead;
+ * that is also what makes collaboration demonstrable without a backend.
  *
  * You are not in the transport's roster at all — your own entry is added here,
  * from what this tab already knows. It costs no round trip, it can't lag behind
@@ -116,21 +166,33 @@ interface Entry {
  * avatar, on whichever screen they touched last. A stack that grew every time a
  * colleague duplicated a tab would read as a crowd that isn't there.
  */
-export function useFormPresence(
-  formId: string | null,
-  /** The screen the viewer is on — republished whenever it changes. */
-  screen: string,
-  /** The signed-in creator's address; ignored in demo mode, which seats tabs. */
-  viewerEmail: string | null,
-  /** Presence is for the editor. Pass false and nothing is published or read. */
+export function useFormRoom({
+  formId,
+  screen,
+  selection,
+  viewerEmail,
   enabled = true,
+  onPeerScreen,
+  onEdit,
+}: {
+  formId: string | null
+  /** The screen the viewer is on — republished whenever it changes. */
+  screen: string
+  /** What the viewer has selected, for everyone else's outlines. */
+  selection: string | null
+  /** The signed-in creator's address; ignored in demo mode, which seats tabs. */
+  viewerEmail: string | null
+  /** Presence is for the editor. Pass false and nothing is published or read. */
+  enabled?: boolean
   /**
    * A peer moved to another screen. Called from the transport, so a follower can
    * navigate in response without an effect watching presence state — the "they
    * moved" event is exactly that, an event.
    */
-  onPeerScreen?: (email: string, screen: string) => void,
-): { me: string | null; peers: PresencePeer[] } {
+  onPeerScreen?: (email: string, screen: string) => void
+  /** A peer changed the document. Apply it to local state. */
+  onEdit?: (edit: DocEdit) => void
+}): { me: string | null; peers: PresencePeer[]; send: (edit: DocEdit) => void } {
   const [tabId] = useState(newTabId)
   // Demo mode's stand-in identity. Read once, in a lazy initialiser rather than
   // an effect, so `me` is a plain derived value and the first render already
@@ -142,16 +204,19 @@ export function useFormPresence(
   /** Everyone *else*, keyed by tab. Only ever written from a transport callback. */
   const [tabs, setTabs] = useState<Record<string, Entry>>({})
 
-  // The screen the transport should publish, and the caller's move handler.
-  // Both in refs so neither a navigation nor a re-render tears the channel down:
-  // resubscribing on every click would make everyone else's stack flicker.
-  const screenRef = useRef(screen)
-  const publishRef = useRef<((screen: string) => void) | null>(null)
+  // What to publish, and the caller's handlers. All in refs so neither a
+  // navigation nor a re-render tears the channel down: resubscribing on every
+  // keystroke would make everyone else's stack flicker.
+  const whereRef = useRef({ screen, selection })
+  const publishRef = useRef<((where: { screen: string; selection: string | null }) => void) | null>(null)
+  const sendRef = useRef<((edit: DocEdit) => void) | null>(null)
   const movedRef = useRef(onPeerScreen)
+  const editedRef = useRef(onEdit)
 
   useEffect(() => {
     movedRef.current = onPeerScreen
-  }, [onPeerScreen])
+    editedRef.current = onEdit
+  }, [onPeerScreen, onEdit])
 
   useEffect(() => {
     if (!active || !formId || !me) return
@@ -159,10 +224,10 @@ export function useFormPresence(
     // Which screen each tab was last seen on, so "they moved" can be told apart
     // from a heartbeat repeating what we already knew.
     const wasOn = new Map<string, string>()
-    const mark = (id: string, email: string, at: string) => {
+    const mark = (id: string, email: string, at: string, selection: string | null) => {
       const moved = wasOn.get(id) !== at
       wasOn.set(id, at)
-      setTabs((prev) => ({ ...prev, [id]: { room: formId, email, screen: at, at: Date.now() } }))
+      setTabs((prev) => ({ ...prev, [id]: { room: formId, email, screen: at, selection, at: Date.now() } }))
       if (moved) movedRef.current?.(email, at)
     }
     const drop = (id: string) => {
@@ -183,7 +248,7 @@ export function useFormPresence(
       })
       channel
         .on('presence', { event: 'sync' }, () => {
-          const state = channel.presenceState<{ email: string; screen: string }>()
+          const state = channel.presenceState<{ email: string; screen: string; selection: string | null }>()
           const seen = new Set<string>()
           for (const [key, entries] of Object.entries(state)) {
             const entry = entries[0]
@@ -191,18 +256,23 @@ export function useFormPresence(
             // would trail a round trip behind the one on screen.
             if (key === tabId || !entry?.email) continue
             seen.add(key)
-            mark(key, entry.email, entry.screen ?? 'welcome')
+            mark(key, entry.email, entry.screen ?? 'welcome', entry.selection ?? null)
           }
           // The server's roster is authoritative about who left, so anyone
           // missing from a sync is gone — no heartbeat needed to notice.
           for (const key of [...wasOn.keys()]) if (!seen.has(key)) drop(key)
         })
+        // Broadcast, not presence: an edit is an event that happened once, not a
+        // fact about who is here. Realtime doesn't echo it back to the sender.
+        .on('broadcast', { event: 'edit' }, (msg) => editedRef.current?.(msg.payload as DocEdit))
         .subscribe((status) => {
-          if (status === 'SUBSCRIBED') void channel.track({ email: me, screen: screenRef.current })
+          if (status === 'SUBSCRIBED') void channel.track({ email: me, ...whereRef.current })
         })
-      publishRef.current = (s) => void channel.track({ email: me, screen: s })
+      publishRef.current = (where) => void channel.track({ email: me, ...where })
+      sendRef.current = (edit) => void channel.send({ type: 'broadcast', event: 'edit', payload: edit })
       return () => {
         publishRef.current = null
+        sendRef.current = null
         void client.removeChannel(channel)
       }
     }
@@ -215,24 +285,26 @@ export function useFormPresence(
       return // no BroadcastChannel (older Safari): you simply see only yourself
     }
     const say = (msg: Wire) => bc.postMessage(msg)
+    const here = (): Wire => ({ type: 'here', tabId, email: me, ...whereRef.current })
     bc.onmessage = (event: MessageEvent<Wire>) => {
       const msg = event.data
       if (msg.tabId === tabId) return
+      if (msg.type === 'edit') return void (msg.edit && editedRef.current?.(msg.edit))
       if (msg.type === 'gone') return drop(msg.tabId)
       if (msg.type === 'who') {
         // Someone just arrived and has no idea who is already here.
-        say({ type: 'here', tabId, email: me, screen: screenRef.current })
+        say(here())
         return
       }
-      if (msg.email) mark(msg.tabId, msg.email, msg.screen ?? 'welcome')
+      if (msg.email) mark(msg.tabId, msg.email, msg.screen ?? 'welcome', msg.selection ?? null)
     }
     say({ type: 'who', tabId })
-    say({ type: 'here', tabId, email: me, screen: screenRef.current })
+    say(here())
 
     // A tab that crashes, or is closed while asleep, never sends 'gone' — so
     // freshness is what really decides who is still here.
     const beat = setInterval(() => {
-      say({ type: 'here', tabId, email: me, screen: screenRef.current })
+      say(here())
       renewSeat(me)
       const cutoff = Date.now() - STALE_MS
       setTabs((prev) => {
@@ -247,10 +319,12 @@ export function useFormPresence(
 
     const leave = () => say({ type: 'gone', tabId })
     window.addEventListener('pagehide', leave)
-    publishRef.current = (s) => say({ type: 'here', tabId, email: me, screen: s })
+    publishRef.current = (where) => say({ type: 'here', tabId, email: me, ...where })
+    sendRef.current = (edit) => say({ type: 'edit', tabId, edit })
 
     return () => {
       publishRef.current = null
+      sendRef.current = null
       window.removeEventListener('pagehide', leave)
       clearInterval(beat)
       leave()
@@ -261,14 +335,25 @@ export function useFormPresence(
   // Tell the others where you are now. In an effect, so it runs after the join
   // above has had a chance to install a publisher.
   useEffect(() => {
-    screenRef.current = screen
-    publishRef.current?.(screen)
-  }, [screen])
+    whereRef.current = { screen, selection }
+    publishRef.current?.({ screen, selection })
+  }, [screen, selection])
+
+  const send = useCallback((edit: DocEdit) => {
+    if (!sendRef.current) return
+    // Too big for the wire — tell them to read it from storage instead. Measured
+    // rather than assumed: only media-carrying patches ever get near the cap.
+    if (edit.t !== 'reload' && JSON.stringify(edit).length > MAX_EDIT_BYTES) {
+      sendRef.current({ t: 'reload' })
+      return
+    }
+    sendRef.current(edit)
+  }, [])
 
   const peers = useMemo(() => {
     if (!active || !me || !formId) return []
     // You first — the anchor for everything beside you.
-    const out: PresencePeer[] = [{ email: me, screen, self: true }]
+    const out: PresencePeer[] = [{ email: me, screen, selection, self: true }]
     const seen = new Set([me.trim().toLowerCase()])
     // Freshest tab wins, so someone with two tabs open shows on the screen they
     // most recently touched. Entries are also filtered by form: opening another
@@ -278,10 +363,10 @@ export function useFormPresence(
       const key = entry.email.trim().toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ email: entry.email, screen: entry.screen, self: false })
+      out.push({ email: entry.email, screen: entry.screen, selection: entry.selection, self: false })
     }
     return out
-  }, [tabs, me, screen, active, formId])
+  }, [tabs, me, screen, selection, active, formId])
 
-  return { me, peers }
+  return { me, peers, send }
 }
