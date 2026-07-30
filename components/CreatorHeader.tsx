@@ -16,7 +16,7 @@ export default function CreatorHeader() {
   const { demo } = useCurrentUser()
 
   return (
-    <header className="sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur">
       <div className="mx-auto flex h-14 w-full max-w-[1100px] items-center justify-between px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-4 sm:gap-7">
           <Link href="/creator" className="flex items-center gap-2 text-[15px] font-semibold tracking-tight">
