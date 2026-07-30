@@ -4,9 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Form, Option, Page, Widget } from '@/lib/types'
 import { type Readiness, POD_OPTIONS, formName, publishDetailsMissing } from '@/lib/builder'
 import { CaretDown, Check, X } from '@phosphor-icons/react'
-import { getKnownPeople } from '@/lib/store'
-import { personColor, personInitials, personName } from '@/lib/format'
-import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
 import { EndScreen, sampleResults } from '@/components/EndScreen'
 import { InlineTextArea } from './Inline'
 import { Field, Toggle } from './controls'
@@ -101,8 +98,6 @@ export function ShareDialog({
   ready,
   published,
   dirty,
-  ownerEmail,
-  viewerEmail,
   onChange,
   onPublish,
   onUpToDate,
@@ -114,10 +109,6 @@ export function ShareDialog({
   ready: Readiness
   published: boolean
   dirty: boolean
-  /** Whoever created the form — named above the collaborators, never editable. */
-  ownerEmail: string | null
-  /** Used only to say "you" instead of your own name. */
-  viewerEmail: string | null
   onChange: (p: Partial<Form>) => void
   onPublish: () => void
   onUpToDate: () => void
@@ -258,15 +249,6 @@ export function ShareDialog({
                 label="Let voters see results"
               />
             </div>
-            <CollaboratorPicker
-              // ?? [] — demo rows written before the column existed have no
-              // array at all, and neither does a Supabase row from an older
-              // schema until it's next written.
-              value={form.collaborators ?? []}
-              onChange={(collaborators) => onChange({ collaborators })}
-              ownerEmail={ownerEmail}
-              viewerEmail={viewerEmail}
-            />
             {published && (
               <div>
                 <p className="mb-1.5 text-[13px] font-medium text-muted">Voter link</p>
@@ -317,158 +299,6 @@ export function ShareDialog({
           </button>
         </div>
       </div>
-    </div>
-  )
-}
-
-/**
- * Search-and-add for the people who can edit this form alongside its creator.
- *
- * Suggestions come from `getKnownPeople()` — everyone the workspace has seen —
- * because there is no directory to query. A colleague who hasn't used Prism yet
- * won't be in that list, so a full address typed in and confirmed is accepted
- * too; that's the difference between a picker and a dead end.
- */
-function CollaboratorPicker({
-  value,
-  onChange,
-  ownerEmail,
-  viewerEmail,
-}: {
-  value: string[]
-  onChange: (v: string[]) => void
-  ownerEmail: string | null
-  viewerEmail: string | null
-}) {
-  const [people, setPeople] = useState<string[]>([])
-  const [query, setQuery] = useState('')
-  const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    let live = true
-    getKnownPeople().then((p) => live && setPeople(p))
-    return () => {
-      live = false
-    }
-  }, [])
-
-  const q = query.trim().toLowerCase()
-  const matches = people
-    .filter((p) => !value.includes(p) && (!q || p.toLowerCase().includes(q) || personName(p).toLowerCase().includes(q)))
-    .slice(0, 5)
-  // A typed-out address counts as a match of its own, so someone new to Prism
-  // can still be added.
-  const typedIsNew = q.endsWith(ALLOWED_EMAIL_DOMAIN) && !people.includes(q) && !value.includes(q)
-
-  function add(email: string) {
-    onChange([...value, email])
-    setQuery('')
-    setOpen(false)
-  }
-
-  return (
-    <div>
-      {/* The owner leads the list, always. The picker below it can add and remove
-          people, which made the form look like it belonged to whoever happened to
-          be in that list — on a form someone else created and shared with you,
-          nothing said whose it was. Not removable and not a chip: ownership isn't
-          one of the things this dialog can change. */}
-      <p className="mb-1.5 text-[13px] font-medium text-muted">{ownerEmail ? 'People' : 'Collaborators'}</p>
-      {ownerEmail && (
-        <div className="mb-2 flex items-center gap-2">
-          <span
-            className="u-circle grid h-6 w-6 flex-none place-items-center rounded-full text-[11px] font-semibold text-white"
-            style={{ backgroundColor: personColor(ownerEmail) }}
-          >
-            {personInitials(ownerEmail)}
-          </span>
-          <span className="min-w-0">
-            <span className="block truncate text-[13px] font-medium">
-              {personName(ownerEmail)}
-              {viewerEmail && viewerEmail.toLowerCase() === ownerEmail.toLowerCase() && (
-                <span className="font-normal text-muted"> (you)</span>
-              )}
-            </span>
-            <span className="block truncate text-[13px] text-muted">{ownerEmail}</span>
-          </span>
-          {/* A label, not a control. Bordered it read as a button beside a row of
-              removable chips — the one thing here you can't act on. */}
-          <span className="ml-auto flex-none text-[12px] font-medium text-muted">Owner</span>
-        </div>
-      )}
-      {value.length > 0 && (
-        <ul className="mb-2 flex flex-wrap gap-1.5">
-          {value.map((email) => (
-            <li key={email} className="flex items-center gap-1.5 rounded-full border border-line bg-black/[0.03] py-1 pl-2.5 pr-1.5 text-[13px]">
-              <span className="font-medium">{personName(email)}</span>
-              <button
-                type="button"
-                onClick={() => onChange(value.filter((e) => e !== email))}
-                aria-label={`Remove ${personName(email)}`}
-                className="grid h-4 w-4 place-items-center rounded-full text-muted transition hover:bg-black/[0.08] hover:text-ink"
-              >
-                <X size={10} aria-hidden="true" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="relative">
-        <input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value)
-            setOpen(true)
-          }}
-          onFocus={() => setOpen(true)}
-          // A blur that lands on a suggestion would close the list before the
-          // click registers, so let the click through first.
-          onBlur={() => setTimeout(() => setOpen(false), 120)}
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter') return
-            e.preventDefault()
-            if (matches[0]) add(matches[0])
-            else if (typedIsNew) add(q)
-          }}
-          placeholder="Search by name or email"
-          className="w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm outline-none placeholder:text-muted focus:border-ink"
-        />
-        {open && (matches.length > 0 || typedIsNew) && (
-          <ul className="u-popover absolute left-0 right-0 top-full z-10 mt-1 overflow-hidden rounded-xl border border-line bg-card py-1 shadow-[0_12px_32px_-12px_rgba(0,0,0,0.3)]">
-            {matches.map((email) => (
-              <li key={email}>
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => add(email)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-black/[0.04]"
-                >
-                  <span className="grid h-6 w-6 flex-none place-items-center rounded-full bg-black/[0.06] text-[11px] font-bold">
-                    {personInitials(email)}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[13px] font-medium">{personName(email)}</span>
-                    <span className="block truncate text-[13px] text-muted">{email}</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-            {typedIsNew && (
-              <li>
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => add(q)}
-                  className="w-full px-3 py-2 text-left text-[13px] transition hover:bg-black/[0.04]"
-                >
-                  Add <span className="font-medium">{q}</span>
-                </button>
-              </li>
-            )}
-          </ul>
-        )}
-      </div>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-muted">They can edit this form with you.</p>
     </div>
   )
 }

@@ -64,8 +64,10 @@ export interface Form {
   status: FormStatus
   /** Which pod owns this form — one of POD_OPTIONS. Asked for at publish. */
   pod: string
-  /** Emails who can edit alongside the creator. Added in the publish dialog. */
+  /** Emails with the same editing control as the creator, except deletion and access management. */
   collaborators: string[]
+  /** Emails who may browse every page in the read-only editor. */
+  viewers: string[]
   /**
    * When the form stops taking responses (ISO timestamp, end of the chosen day).
    * Asked for at publish; a form past it reads as closed to voters.

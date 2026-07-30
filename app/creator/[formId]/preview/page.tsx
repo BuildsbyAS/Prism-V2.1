@@ -7,6 +7,7 @@ import type { FullForm } from '@/lib/types'
 import { getFullForm, DEMO_STORAGE_KEY } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
 import { formName, hasResults } from '@/lib/builder'
+import { canEditForm, formAccess } from '@/lib/access'
 import { ArrowLeft, ArrowSquareOut, Check, Info, LinkSimple } from '@phosphor-icons/react'
 import StatusBadge from '@/components/StatusBadge'
 import FormHeader from '@/components/builder/FormHeader'
@@ -91,15 +92,9 @@ export default function FormPreviewPage() {
     }
   }, [refresh])
 
-  // Editors include the creator and every named collaborator.
-  const canEdit = Boolean(
-    full &&
-      user &&
-      (full.form.creator_id === user.id ||
-        (full.form.collaborators ?? []).some(
-          (email) => email.toLowerCase() === user.email.toLowerCase(),
-        )),
-  )
+  const access = full ? formAccess(full.form, user) : null
+  const canEdit = canEditForm(access)
+  const canOpenEditor = canEdit || access === 'view'
   const publicPath = full ? `/f/${full.form.slug}` : null
 
   async function copyFormLink() {
@@ -148,7 +143,7 @@ export default function FormPreviewPage() {
         formId={formId}
         tab="preview"
         name={full ? formName(full.form) : null}
-        canEdit={canEdit}
+        canEdit={canOpenEditor}
         canSeeResults={
           !full || (hasResults(full.form) && (canEdit || full.form.show_results_to_voters))
         }

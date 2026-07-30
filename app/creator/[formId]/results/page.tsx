@@ -6,6 +6,7 @@ import Link from 'next/link'
 import type { FullForm, FormResults, Page } from '@/lib/types'
 import { getFullForm, getResults, getFormVoters, markResponsesSeen, type FormVoter } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
+import { canEditForm, formAccess } from '@/lib/access'
 import {
   WIDGET_META,
   formName,
@@ -39,17 +40,11 @@ export default function ResultsPage() {
   const [voters, setVoters] = useState<FormVoter[] | null>(null)
   const [missing, setMissing] = useState(false)
 
-  // The creator and named collaborators are editors. The RPC behind
-  // getFormVoters applies this same rule server-side; this controls the private
-  // results UI and editor navigation.
-  const isEditor = Boolean(
-    full &&
-      user &&
-      (full.form.creator_id === user.id ||
-        (full.form.collaborators ?? []).some(
-          (email) => email.toLowerCase() === user.email.toLowerCase(),
-        )),
-  )
+  // View-only collaborators can return to the read-only editor, but results
+  // stay an editor permission unless the creator made them public to voters.
+  const access = full ? formAccess(full.form, user) : null
+  const isEditor = canEditForm(access)
+  const canOpenEditor = isEditor || access === 'view'
 
   useEffect(() => {
     getFullForm(formId).then((f) => {
@@ -79,7 +74,7 @@ export default function ResultsPage() {
           formId={formId}
           tab="results"
           name={formName(full.form)}
-          canEdit={isEditor}
+          canEdit={canOpenEditor}
           canSeeResults={false}
           status={<StatusBadge status={full.form.status} />}
         />
@@ -106,7 +101,7 @@ export default function ResultsPage() {
           formId={formId}
           tab="results"
           name={formName(full.form)}
-          canEdit={false}
+          canEdit={canOpenEditor}
           canSeeResults={false}
           status={<StatusBadge status={full.form.status} />}
         />
@@ -149,7 +144,7 @@ export default function ResultsPage() {
         formId={formId}
         tab="results"
         name={full ? formName(full.form) : null}
-        canEdit={isEditor}
+        canEdit={canOpenEditor}
         canSeeResults
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       />

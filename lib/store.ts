@@ -32,6 +32,7 @@ export interface DashboardForm {
   lastResponseAt: string | null
   /** Collaborators can edit; only the creator can permanently delete. */
   isOwner: boolean
+  access: 'owner' | 'edit' | 'view'
 }
 
 /**
@@ -51,6 +52,7 @@ export type ListedForm = Pick<
   | 'expires_at'
   | 'pod'
   | 'collaborators'
+  | 'viewers'
   // The dashboard card's thumbnail is the form's own welcome hero, on the
   // backdrop the creator picked for it.
   | 'hero_image_url'
@@ -109,6 +111,7 @@ function newForm(mode: FormMode, creatorId: string): Form {
     status: 'draft',
     pod: '',
     collaborators: [],
+    viewers: [],
     expires_at: null,
     show_results_to_voters: true,
     require_voter_login: false,
@@ -187,11 +190,15 @@ export async function getDashboard(
     const collaboratorQuery = viewerEmail
       ? supabase.from('forms').select('*').contains('collaborators', [viewerEmail.toLowerCase()])
       : Promise.resolve({ data: [], error: null })
-    const [owned, shared] = await Promise.all([ownQuery, collaboratorQuery])
+    const viewerQuery = viewerEmail
+      ? supabase.from('forms').select('*').contains('viewers', [viewerEmail.toLowerCase()])
+      : Promise.resolve({ data: [], error: null })
+    const [owned, shared, viewOnly] = await Promise.all([ownQuery, collaboratorQuery, viewerQuery])
     if (owned.error) throw owned.error
     if (shared.error) throw shared.error
+    if (viewOnly.error) throw viewOnly.error
     const byId = new Map<string, Form>()
-    for (const row of [...(owned.data ?? []), ...(shared.data ?? [])]) {
+    for (const row of [...(owned.data ?? []), ...(shared.data ?? []), ...(viewOnly.data ?? [])]) {
       byId.set(row.id, row as Form)
     }
     const forms = [...byId.values()].sort((a, b) =>
@@ -215,6 +222,14 @@ export async function getDashboard(
       responseCount: counts[form.id]?.n ?? 0,
       lastResponseAt: counts[form.id]?.last ?? null,
       isOwner: form.creator_id === creatorId,
+      access:
+        form.creator_id === creatorId
+          ? 'owner'
+          : (form.collaborators ?? []).some(
+                (email) => email.toLowerCase() === viewerEmail.toLowerCase(),
+              )
+            ? 'edit'
+            : 'view',
     }))
   }
 
@@ -224,6 +239,9 @@ export async function getDashboard(
       (f) =>
         f.creator_id === creatorId ||
         (f.collaborators ?? []).some(
+          (email) => email.toLowerCase() === viewerEmail.toLowerCase(),
+        ) ||
+        (f.viewers ?? []).some(
           (email) => email.toLowerCase() === viewerEmail.toLowerCase(),
         ),
     )
@@ -239,6 +257,14 @@ export async function getDashboard(
         responseCount: rs.length,
         lastResponseAt: last,
         isOwner: form.creator_id === creatorId,
+        access:
+          form.creator_id === creatorId
+            ? 'owner'
+            : (form.collaborators ?? []).some(
+                  (email) => email.toLowerCase() === viewerEmail.toLowerCase(),
+                )
+              ? 'edit'
+              : 'view',
       }
     })
 }
@@ -267,6 +293,7 @@ interface TeamRow {
   hero_bg?: string | null
   hero_dither?: boolean | null
   collaborators?: string[] | null
+  viewers?: string[] | null
   show_results_to_voters?: boolean | null
   viewer_has_responded?: boolean | null
 }
@@ -302,6 +329,7 @@ export async function getTeamForms(viewerId = DEMO_CREATOR_ID): Promise<TeamForm
         expires_at: r.expires_at ?? null,
         pod: r.pod ?? '',
         collaborators: r.collaborators ?? [],
+        viewers: r.viewers ?? [],
         hero_image_url: r.hero_image_url ?? '',
         hero_bg: r.hero_bg ?? 'none',
         hero_dither: r.hero_dither ?? true,
@@ -362,15 +390,17 @@ export async function getKnownPeople(): Promise<string[]> {
   if (isSupabaseConfigured && supabase) {
     const { data } = await supabase.rpc('team_forms')
     for (const r of (data ?? []) as TeamRow[]) if (r.creator_email) emails.add(r.creator_email)
-    const { data: mine } = await supabase.from('forms').select('collaborators')
-    for (const f of (mine ?? []) as { collaborators: string[] | null }[]) {
+    const { data: mine } = await supabase.from('forms').select('collaborators,viewers')
+    for (const f of (mine ?? []) as { collaborators: string[] | null; viewers: string[] | null }[]) {
       for (const c of f.collaborators ?? []) emails.add(c)
+      for (const c of f.viewers ?? []) emails.add(c)
     }
   } else {
     const db = readDemo()
     for (const f of db.forms) {
       emails.add(demoCreatorEmail(f.creator_id))
       for (const c of f.collaborators ?? []) emails.add(c)
+      for (const c of f.viewers ?? []) emails.add(c)
     }
   }
   return [...emails].sort()
@@ -633,6 +663,35 @@ export async function deleteForm(id: string): Promise<void> {
   db.options = db.options.filter((o) => o.form_id !== id)
   db.widgets = db.widgets.filter((w) => w.form_id !== id)
   db.responses = db.responses.filter((r) => r.form_id !== id)
+  writeDemo(db)
+}
+
+/** Owner-only access update. Supabase also enforces ownership in a trigger. */
+export async function updateFormAccess(
+  id: string,
+  collaborators: string[],
+  viewers: string[],
+): Promise<void> {
+  const editors = [...new Set(collaborators.map((email) => email.trim().toLowerCase()))]
+  const readOnly = [
+    ...new Set(
+      viewers
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => !editors.includes(email)),
+    ),
+  ]
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('forms')
+      .update({ collaborators: editors, viewers: readOnly })
+      .eq('id', id)
+    if (error) throw error
+    return
+  }
+  const db = readDemo()
+  db.forms = db.forms.map((form) =>
+    form.id === id ? { ...form, collaborators: editors, viewers: readOnly } : form,
+  )
   writeDemo(db)
 }
 

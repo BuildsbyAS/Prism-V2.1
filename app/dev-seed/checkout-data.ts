@@ -236,6 +236,7 @@ function form(over: Partial<Form> & Pick<Form, 'id' | 'slug' | 'created_at'>): F
     status: 'draft',
     pod: '',
     collaborators: [],
+    viewers: [],
     expires_at: null,
     show_results_to_voters: true,
     require_voter_login: false,
