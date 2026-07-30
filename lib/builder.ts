@@ -93,12 +93,30 @@ export function newPage(formId: string, type: PageType, order: number): Page {
     title: '',
     body: '',
     show_neutral_option: true,
+    neutral_label: '',
   }
 }
 
-/** Generated neutral choice shown below a comparison's authored options. */
-export function neutralChoiceLabel(optionCount: number): string {
+/**
+ * Wording for the neutral choice offered beneath a comparison's real options.
+ *
+ * Generated from the option count, because "Both feel equal" is wrong the moment
+ * there are three. Two options make it a tie; more make it a rejection.
+ */
+export function defaultNeutralLabel(optionCount: number): string {
   return optionCount > 2 ? "I don't like anything" : 'Both feel equal'
+}
+
+/**
+ * What a page's neutral choice is actually called: the creator's wording if they
+ * changed it, the generated default otherwise.
+ *
+ * Every surface that shows this answer — the editor, the voter's form, the end
+ * screen, the results — goes through here, so rewording it in one place changes
+ * it everywhere including the tally it's already collecting under.
+ */
+export function neutralChoiceLabel(page: Pick<Page, 'neutral_label'>, optionCount: number): string {
+  return (page.neutral_label ?? '').trim() || defaultNeutralLabel(optionCount)
 }
 
 /** Result-bucket key for a page's generated neutral choice. */

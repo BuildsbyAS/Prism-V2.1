@@ -29,6 +29,12 @@ export interface Page {
    * default of showing the answer.
    */
   show_neutral_option?: boolean
+  /**
+   * What that neutral answer is called, when the creator has reworded it. Empty
+   * or absent falls back to the generated wording — always read it through
+   * `neutralChoiceLabel()`, never directly.
+   */
+  neutral_label?: string
 }
 
 export interface Form {

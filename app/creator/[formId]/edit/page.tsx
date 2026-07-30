@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
-import { getFullForm, saveFullForm, isStorageFull } from '@/lib/store'
+import { getFullForm, saveFullForm, isStorageFull, getFormOwnerEmail } from '@/lib/store'
+import { useCurrentUser } from '@/lib/auth'
+import { useFormPresence } from '@/lib/presence'
 import {
   hasResults,
   newPage,
@@ -36,6 +38,7 @@ import { EndScreenCenter, ShareDialog } from '@/components/builder/Share'
 import { PageProperties, OptionProperties, InputProperties, WelcomeProperties, EndProperties } from '@/components/builder/properties'
 import DeviceSwitch, { DEVICE_MAX_WIDTH, type Device } from '@/components/builder/DeviceSwitch'
 import FormHeader from '@/components/builder/FormHeader'
+import PresenceBar from '@/components/builder/PresenceBar'
 import CanvasNudge from '@/components/builder/CanvasNudge'
 import MediaModal from '@/components/builder/MediaModal'
 import PanelResizer, { useRailWidth, usePanelWidth } from '@/components/builder/PanelResizer'
@@ -140,6 +143,76 @@ export default function BuilderPage() {
         : (sel.kind === 'option' ? options.find((o) => o.id === sel.key) : widgets.find((w) => w.id === sel.key))?.page_id ?? 'welcome'
 
   const goToScreen = useCallback((id: string) => setSel(selectionFor(id)), [])
+
+  // ---- Who else is in here -------------------------------------------------
+  // A form has collaborators, so the editor has to be able to answer "is anyone
+  // else in this right now" — renaming a page under someone, or publishing while
+  // they're still writing, are both things you'd hold off on if you knew.
+  const { user } = useCurrentUser()
+  const [ownerEmail, setOwnerEmail] = useState<string | null>(null)
+  // Who is being followed, by address rather than by tab so it survives them
+  // reloading. An address that is no longer in `peers` simply follows nobody:
+  // the pill and the ring disappear when they leave, and resume if they return.
+  const [following, setFollowing] = useState<string | null>(null)
+  // The same value, readable from the presence callback below, which is installed
+  // once and would otherwise close over whoever was followed at the time.
+  const followingRef = useRef<string | null>(null)
+
+  /** Screens the canvas can show — a peer may be on a page you haven't loaded. */
+  const screenExists = useCallback(
+    (id: string) => id === 'welcome' || id === 'end' || pages.some((p) => p.id === id),
+    [pages],
+  )
+
+  /**
+   * They moved, so the follower moves. Driven by the presence event rather than
+   * by watching presence state, which keeps this a response to something that
+   * happened — and leaves you free to look elsewhere in between without being
+   * yanked back until they actually navigate again.
+   */
+  const onPeerScreen = useCallback(
+    (email: string, screen: string) => {
+      if (email !== followingRef.current) return
+      if (screenExists(screen)) goToScreen(screen)
+    },
+    [screenExists, goToScreen],
+  )
+
+  const { peers } = useFormPresence(form ? formId : null, activeScreen, user?.email ?? null, !isMobile, onPeerScreen)
+
+  /** Start (or stop) following someone, and jump to where they are right now. */
+  const follow = useCallback(
+    (email: string | null) => {
+      followingRef.current = email
+      setFollowing(email)
+      const target = email ? peers.find((p) => p.email === email)?.screen : null
+      if (target && screenExists(target)) goToScreen(target)
+    },
+    [peers, screenExists, goToScreen],
+  )
+
+  useEffect(() => {
+    if (!form) return
+    let live = true
+    getFormOwnerEmail(form, { userId: user?.id ?? null, email: user?.email ?? null })
+      .then((email) => live && setOwnerEmail(email))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [form, user?.id, user?.email])
+
+  /** How a screen is named in a presence tooltip — the rail's own wording. */
+  const screenLabel = useCallback(
+    (id: string) => {
+      if (id === 'welcome') return 'Introduction'
+      if (id === 'end') return 'End screen'
+      const page = pages.find((p) => p.id === id)
+      if (!page) return 'another screen'
+      return page.title.trim() || PAGE_META[page.type].label
+    },
+    [pages],
+  )
 
   /**
    * Bring an input's card into view on the canvas and pulse it once.
@@ -679,6 +752,17 @@ export default function BuilderPage() {
         <div className="hidden md:block">
           <DeviceSwitch value={device} onChange={setDevice} />
         </div>
+        {/* Immediately left of Publish, because that's the button whose meaning
+            changes when someone else is in here. Shown on a closed form too —
+            nobody can edit it, but "who else is reading this" still stands. */}
+        <PresenceBar
+          peers={peers}
+          ownerEmail={ownerEmail}
+          screenLabel={screenLabel}
+          following={following}
+          onFollow={follow}
+          onStopFollowing={() => follow(null)}
+        />
         {locked ? null : publishButton}
       </FormHeader>
 
@@ -778,7 +862,10 @@ export default function BuilderPage() {
                 laptopAspect ? 'md:aspect-[1512/982] md:flex-none' : ''
               }`}
             >
-              <div className={`w-full ${screenFit ? 'md:h-full' : ''}`}>
+              {/* data-screen names what the canvas is showing. Nothing styles it;
+                  it's what tells you which screen you're on from the outside —
+                  the rail marks the active row with a background alone. */}
+              <div data-screen={screen.id} className={`w-full ${screenFit ? 'md:h-full' : ''}`}>
                 {screen.id === 'welcome' && (
                   <WelcomeCenter
                     form={form}
@@ -907,7 +994,7 @@ export default function BuilderPage() {
       )}
 
       {shareOpen && (
-        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} onChange={patchForm} onPublish={publish} onUpToDate={showUpToDateToast} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
+        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} ownerEmail={ownerEmail} viewerEmail={user?.email ?? null} onChange={patchForm} onPublish={publish} onUpToDate={showUpToDateToast} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
       )}
 
       {upToDateToast !== null && (

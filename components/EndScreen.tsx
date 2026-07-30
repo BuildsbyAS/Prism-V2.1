@@ -167,7 +167,7 @@ function PageShare({
   if (page.show_neutral_option !== false || neutralCount > 0) {
     slices.push({
       id: neutralChoiceKey(page.id),
-      label: neutralChoiceLabel(options.length),
+      label: neutralChoiceLabel(page, options.length),
       value: neutralCount,
       color: optionColor(options.length),
     })

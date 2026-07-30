@@ -85,7 +85,11 @@ create table if not exists public.pages (
   order_index int not null default 0,
   title       text not null default '',
   body        text not null default '',
-  show_neutral_option boolean not null default true
+  show_neutral_option boolean not null default true,
+  -- What that neutral choice is called. Empty means "use the generated wording"
+  -- (see neutralChoiceLabel), which depends on how many options the page has —
+  -- so a blank stays blank rather than being backfilled with today's text.
+  neutral_label text not null default ''
 );
 
 create table if not exists public.options (
@@ -321,6 +325,11 @@ alter table public.forms add column if not exists name text;
 alter table public.pages
   add column if not exists show_neutral_option boolean not null default true;
 
+-- Creators can reword that neutral choice. Empty on existing rows, which is the
+-- signal to keep generating the wording rather than a value to display.
+alter table public.pages
+  add column if not exists neutral_label text not null default '';
+
 -- ---------------------------------------------------------------------------
 -- One response per browser
 -- ---------------------------------------------------------------------------
@@ -443,6 +452,34 @@ $$;
 
 revoke all on function public.form_voters(uuid) from public;
 grant execute on function public.form_voters(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Who owns a form
+-- ---------------------------------------------------------------------------
+-- The publish dialog names the owner beside the collaborators it lets you add,
+-- so a shared form says whose it is rather than implying everyone on the list is
+-- equal. `creator_id` is an auth.users id and auth.users is unreadable from a
+-- client, hence the definer function.
+--
+-- Scoped to that form's own editors: this reveals one colleague's address to
+-- people already working with them on that form, and nothing to anybody else.
+-- Not a general id→email lookup, which is what a table would have been.
+create or replace function public.form_owner_email(p_form_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select u.email::text
+    from public.forms f
+    join auth.users u on u.id = f.creator_id
+   where f.id = p_form_id
+     and public.is_editor(f.creator_id, f.collaborators);
+$$;
+
+revoke all on function public.form_owner_email(uuid) from public;
+grant execute on function public.form_owner_email(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Team feed
