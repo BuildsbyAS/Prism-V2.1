@@ -103,6 +103,7 @@ export function ShareDialog({
   dirty,
   onChange,
   onPublish,
+  onUpToDate,
   onUnpublish,
   onClose,
 }: {
@@ -113,6 +114,7 @@ export function ShareDialog({
   dirty: boolean
   onChange: (p: Partial<Form>) => void
   onPublish: () => void
+  onUpToDate: () => void
   onUnpublish: () => void
   onClose: () => void
 }) {
@@ -133,6 +135,10 @@ export function ShareDialog({
   const expiryError = attempted && !form.expires_at
 
   function handlePublish() {
+    if (published && !dirty) {
+      onUpToDate()
+      return
+    }
     if (!canPublish) {
       setAttempted(true)
       return
@@ -297,11 +303,7 @@ export function ShareDialog({
           <button
             type="button"
             onClick={handlePublish}
-            // Only ever disabled when there is genuinely nothing to do — a live
-            // form with no unsaved changes. An incomplete one stays clickable and
-            // answers with the reasons; see `attempted`.
-            disabled={published && !dirty}
-            className="flex-none rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex-none rounded-[16px] bg-ink px-5 py-2.5 text-[14px] font-medium text-white transition hover:opacity-90"
           >
             {!published ? 'Publish form' : dirty ? 'Publish changes' : 'Published — up to date'}
           </button>

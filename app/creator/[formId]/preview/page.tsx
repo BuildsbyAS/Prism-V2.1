@@ -154,6 +154,7 @@ export default function FormPreviewPage() {
         }
         status={full ? <StatusBadge status={full.form.status} /> : undefined}
       >
+        <DeviceSwitch value={device} onChange={setDevice} />
         {publicPath && full?.form.status !== 'draft' && (
           <div className="flex items-center gap-1.5">
             <button
@@ -177,7 +178,6 @@ export default function FormPreviewPage() {
             </Link>
           </div>
         )}
-        <DeviceSwitch value={device} onChange={setDevice} />
       </FormHeader>
 
       <div className="flex h-[calc(100dvh-3.5rem)] flex-col overflow-hidden">
