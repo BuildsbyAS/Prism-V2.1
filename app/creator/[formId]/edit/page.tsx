@@ -1,12 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
 import { getFullForm, saveFullForm, isStorageFull, getFormOwnerEmail } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
-import { useFormPresence } from '@/lib/presence'
+import { useFormRoom, type DocEdit, type PeerMark } from '@/lib/presence'
+import { personColor, personName } from '@/lib/format'
 import {
   hasResults,
   newPage,
@@ -67,6 +68,19 @@ const TOPBAR_HEIGHT = 56
 /** Screen ids are 'welcome', 'end', or a page id — see the canvas scrollspy. */
 function selectionFor(screen: string): Selection {
   return screen === 'welcome' ? { kind: 'welcome' } : screen === 'end' ? { kind: 'end' } : { kind: 'page', id: screen }
+}
+
+/**
+ * A selection flattened to a string, so it can be published to collaborators and
+ * compared against theirs. `option:<id>` is what draws an outline round that card
+ * in their colour.
+ */
+function selectionKey(sel: Selection): string {
+  return sel.kind === 'welcome' || sel.kind === 'end'
+    ? sel.kind
+    : sel.kind === 'page'
+      ? `page:${sel.id}`
+      : `${sel.kind}:${sel.key}`
 }
 
 export default function BuilderPage() {
@@ -178,7 +192,96 @@ export default function BuilderPage() {
     [screenExists, goToScreen],
   )
 
-  const { peers } = useFormPresence(form ? formId : null, activeScreen, user?.email ?? null, !isMobile, onPeerScreen)
+  // What this tab has selected and which screen that resolves to, readable from
+  // the transport callbacks below — they're installed once, so they can't close
+  // over either value.
+  const selRef = useRef(sel)
+  const screenRef = useRef(activeScreen)
+  useEffect(() => {
+    selRef.current = sel
+    screenRef.current = activeScreen
+  }, [sel, activeScreen])
+
+  /**
+   * Keep the selection pointing at something that still exists.
+   *
+   * A collaborator deleting the option you had selected used to empty your
+   * canvas: `sel` still named the dead option, so the editor couldn't work out
+   * which page you were on and fell all the way back to the introduction. Land
+   * on the page you were already looking at instead — the screen doesn't move,
+   * only the selection inside it.
+   */
+  const keepSelectionAlive = useCallback((next: { options?: Option[]; widgets?: Widget[]; pages?: Page[] }) => {
+    const current = selRef.current
+    const gone =
+      (current.kind === 'option' && next.options && !next.options.some((o) => o.id === current.key)) ||
+      (current.kind === 'input' && next.widgets && !next.widgets.some((w) => w.id === current.key)) ||
+      (current.kind === 'page' && next.pages && !next.pages.some((p) => p.id === current.id))
+    if (!gone) return
+    const here = screenRef.current
+    const stillThere = here === 'welcome' || here === 'end' || (next.pages ?? pages).some((p) => p.id === here)
+    setSel(selectionFor(stillThere ? here : 'welcome'))
+  }, [pages])
+
+  /**
+   * A collaborator's change, applied to this tab's state.
+   *
+   * Field patches only touch the keys they carry, so two people editing different
+   * fields of the same option don't undo each other; a collection replaces its
+   * own state wholesale, which is what an add, a delete or a reorder is. `reload`
+   * comes from an edit too big for the wire, so it's read from storage instead.
+   */
+  const applyEdit = useCallback(
+    (edit: DocEdit) => {
+      switch (edit.t) {
+        case 'form':
+          setForm((f) => (f ? { ...f, ...edit.patch } : f))
+          break
+        case 'page':
+          setPages((ps) => ps.map((p) => (p.id === edit.id ? { ...p, ...edit.patch } : p)))
+          break
+        case 'option':
+          setOptions((os) => os.map((o) => (o.id === edit.id ? { ...o, ...edit.patch } : o)))
+          break
+        case 'widget':
+          setWidgets((ws) => ws.map((w) => (w.id === edit.id ? { ...w, ...edit.patch } : w)))
+          break
+        case 'pages':
+          setPages(edit.rows)
+          keepSelectionAlive({ pages: edit.rows })
+          break
+        case 'options':
+          setOptions(edit.rows)
+          keepSelectionAlive({ options: edit.rows })
+          break
+        case 'widgets':
+          setWidgets(edit.rows)
+          keepSelectionAlive({ widgets: edit.rows })
+          break
+        case 'reload':
+          getFullForm(formId).then((f) => {
+            if (!f) return
+            setForm(f.form)
+            setPages(f.pages)
+            setOptions(f.options)
+            setWidgets(f.widgets)
+            keepSelectionAlive({ pages: f.pages, options: f.options, widgets: f.widgets })
+          })
+          break
+      }
+    },
+    [formId, keepSelectionAlive],
+  )
+
+  const { peers, send } = useFormRoom({
+    formId: form ? formId : null,
+    screen: activeScreen,
+    selection: selectionKey(sel),
+    viewerEmail: user?.email ?? null,
+    enabled: !isMobile,
+    onPeerScreen,
+    onEdit: applyEdit,
+  })
 
   /** Start (or stop) following someone, and jump to where they are right now. */
   const follow = useCallback(
@@ -201,6 +304,28 @@ export default function BuilderPage() {
       live = false
     }
   }, [form, user?.id, user?.email])
+
+  /**
+   * Everyone else's selection, resolved to colours the canvas and rail can draw.
+   *
+   * Keyed the way each surface asks for it: cards by entity id, rail rows by
+   * screen. A screen can hold several people, so those come back as a list.
+   */
+  const marks = useMemo(() => {
+    const optionMarks: Record<string, PeerMark> = {}
+    const inputMarks: Record<string, PeerMark> = {}
+    const railMarks: Record<string, PeerMark[]> = {}
+    for (const peer of peers) {
+      if (peer.self) continue
+      const mark: PeerMark = { color: personColor(peer.email), name: personName(peer.email).split(' ')[0] }
+      ;(railMarks[peer.screen] ??= []).push(mark)
+      const [kind, id] = (peer.selection ?? '').split(':')
+      if (!id) continue
+      if (kind === 'option') optionMarks[id] = mark
+      else if (kind === 'input') inputMarks[id] = mark
+    }
+    return { optionMarks, inputMarks, railMarks }
+  }, [peers])
 
   /** How a screen is named in a presence tooltip — the rail's own wording. */
   const screenLabel = useCallback(
@@ -353,47 +478,71 @@ export default function BuilderPage() {
     [persist],
   )
 
+  // Each of these does two things now: change this tab, and tell the room. The
+  // patch goes out as it's typed rather than waiting for the 700ms autosave —
+  // "real time" is the point, and a keystroke-sized patch is cheap.
   const patchForm = useCallback((p: Partial<Form>) => {
     if (locked) return
     setForm((f) => (f ? { ...f, ...p } : f))
-  }, [locked])
+    send({ t: 'form', patch: p })
+  }, [locked, send])
   const patchPage = useCallback((id: string, p: Partial<Page>) => {
     if (locked) return
     setPages((ps) => ps.map((x) => (x.id === id ? { ...x, ...p } : x)))
-  }, [locked])
+    send({ t: 'page', id, patch: p })
+  }, [locked, send])
   const patchOption = useCallback((key: string, p: Partial<Option>) => {
     if (locked) return
     setOptions((os) => os.map((o) => (o.id === key ? { ...o, ...p } : o)))
-  }, [locked])
+    send({ t: 'option', id: key, patch: p })
+  }, [locked, send])
   const patchWidget = useCallback((key: string, p: Partial<Widget>) => {
     if (locked) return
     setWidgets((ws) => ws.map((w) => (w.id === key ? { ...w, ...p } : w)))
-  }, [locked])
+    send({ t: 'widget', id: key, patch: p })
+  }, [locked, send])
+
+  /**
+   * Structural changes — add, delete, duplicate, reorder — go out as the whole
+   * collection rather than as a description of the operation. It's one message
+   * either way, and a collection can't drift out of step the way a replayed
+   * "insert at index 3" can.
+   */
+  const putPages = useCallback((rows: Page[]) => {
+    setPages(rows)
+    send({ t: 'pages', rows })
+  }, [send])
+  const putOptions = useCallback((rows: Option[]) => {
+    setOptions(rows)
+    send({ t: 'options', rows })
+  }, [send])
+  const putWidgets = useCallback((rows: Widget[]) => {
+    setWidgets(rows)
+    send({ t: 'widgets', rows })
+  }, [send])
 
   // Pages
   function addPage(type: PageType, afterIndex = pages.length - 1) {
     if (locked) return
     if (!form) return
     const page = newPage(form.id, type, 0)
-    setPages((ps) => {
-      const next = ps.slice()
-      next.splice(afterIndex + 1, 0, page)
-      return next
-    })
+    const nextPages = pages.slice()
+    nextPages.splice(afterIndex + 1, 0, page)
+    putPages(nextPages)
     // A feedback page is a comparison — seed it with two options (A/B) so it's
     // never empty. Static pages start blank (you add the context media).
     if (type === 'feedback') {
       const a = newOption(form.id, page.id, options.length, 0)
       const b = newOption(form.id, page.id, options.length + 1, 1)
-      setOptions((os) => [...os, a, b])
+      putOptions([...options, a, b])
     }
     setSel({ kind: 'page', id: page.id })
   }
   function deletePage(id: string) {
     if (locked) return
-    setPages((ps) => ps.filter((p) => p.id !== id))
-    setOptions((os) => os.filter((o) => o.page_id !== id))
-    setWidgets((ws) => ws.filter((w) => w.page_id !== id))
+    putPages(pages.filter((p) => p.id !== id))
+    putOptions(options.filter((o) => o.page_id !== id))
+    putWidgets(widgets.filter((w) => w.page_id !== id))
     setSel({ kind: 'welcome' })
   }
   /**
@@ -405,14 +554,14 @@ export default function BuilderPage() {
     if (locked) return
     const page = pages.find((p) => p.id === id)
     if (!page || !form) return
-    setPages((ps) => ps.map((p) => (p.id === id ? { ...p, title: '', body: '' } : p)))
-    setWidgets((ws) => ws.filter((w) => w.page_id !== id))
-    setOptions((os) => {
-      const rest = os.filter((o) => o.page_id !== id)
-      return page.type === 'feedback'
+    putPages(pages.map((p) => (p.id === id ? { ...p, title: '', body: '' } : p)))
+    putWidgets(widgets.filter((w) => w.page_id !== id))
+    const rest = options.filter((o) => o.page_id !== id)
+    putOptions(
+      page.type === 'feedback'
         ? [...rest, newOption(form.id, id, rest.length, 0), newOption(form.id, id, rest.length + 1, 1)]
-        : rest
-    })
+        : rest,
+    )
     setSel({ kind: 'page', id })
   }
   /**
@@ -440,23 +589,19 @@ export default function BuilderPage() {
     if (!page) return
     const copy = dupPage(page)
     const idx = pages.findIndex((p) => p.id === id)
-    setPages((ps) => {
-      const next = ps.slice()
-      next.splice(idx + 1, 0, copy)
-      return next
-    })
-    setOptions((os) => [...os, ...os.filter((o) => o.page_id === id).map((o) => ({ ...dupOption(o), page_id: copy.id }))])
-    setWidgets((ws) => [...ws, ...ws.filter((w) => w.page_id === id).map((w) => ({ ...dupWidget(w), page_id: copy.id }))])
+    const nextPages = pages.slice()
+    nextPages.splice(idx + 1, 0, copy)
+    putPages(nextPages)
+    putOptions([...options, ...options.filter((o) => o.page_id === id).map((o) => ({ ...dupOption(o), page_id: copy.id }))])
+    putWidgets([...widgets, ...widgets.filter((w) => w.page_id === id).map((w) => ({ ...dupWidget(w), page_id: copy.id }))])
     setSel({ kind: 'page', id: copy.id })
   }
   function reorderPages(from: number, to: number) {
     if (locked) return
-    setPages((ps) => {
-      const next = ps.slice()
-      const [item] = next.splice(from, 1)
-      next.splice(to, 0, item)
-      return next
-    })
+    const next = pages.slice()
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    putPages(next)
   }
 
   // Options / inputs (scoped to a page)
@@ -465,20 +610,20 @@ export default function BuilderPage() {
     if (!form) return
     const count = options.filter((o) => o.page_id === pageId).length
     const o = newOption(form.id, pageId, options.length, count)
-    setOptions((os) => [...os, o])
+    putOptions([...options, o])
     setSel({ kind: 'option', key: o.id })
   }
   function removeOption(key: string) {
     if (locked) return
     const o = options.find((x) => x.id === key)
-    setOptions((os) => os.filter((x) => x.id !== key))
+    putOptions(options.filter((x) => x.id !== key))
     if (o) setSel({ kind: 'page', id: o.page_id })
   }
   function addInput(pageId: string, type: WidgetType) {
     if (locked) return
     if (!form) return
     const w = newWidget(form.id, pageId, type, widgets.length)
-    setWidgets((ws) => [...ws, w])
+    putWidgets([...widgets, w])
     setSel({ kind: 'input', key: w.id })
     // A new input lands under the options grid, which is usually taller than the
     // canvas — without this the click reads as "nothing happened".
@@ -487,18 +632,21 @@ export default function BuilderPage() {
   function removeInput(key: string) {
     if (locked) return
     const w = widgets.find((x) => x.id === key)
-    setWidgets((ws) => ws.filter((x) => x.id !== key))
+    putWidgets(widgets.filter((x) => x.id !== key))
     if (w) setSel({ kind: 'page', id: w.page_id })
   }
   const changeWidgetType = useCallback((key: string, type: WidgetType) => {
-    setWidgets((ws) =>
-      ws.map((w) => {
-        if (w.id !== key) return w
-        const fresh = newWidget(w.form_id, w.page_id, type, w.order_index)
-        return { ...w, type, config: { ...fresh.config, label: w.config.label, description: w.config.description, required: w.config.required, showTitle: w.config.showTitle } }
-      }),
-    )
-  }, [])
+    const target = widgets.find((w) => w.id === key)
+    if (!target) return
+    const fresh = newWidget(target.form_id, target.page_id, type, target.order_index)
+    const c = target.config
+    // Swapping the input type keeps what the creator wrote and replaces only the
+    // type's own settings, so the patch is exactly those two keys.
+    patchWidget(key, {
+      type,
+      config: { ...fresh.config, label: c.label, description: c.description, required: c.required, showTitle: c.showTitle },
+    })
+  }, [widgets, patchWidget])
   function openMedia(key: string) {
     if (locked) return
     setSel({ kind: 'option', key })
@@ -794,7 +942,7 @@ export default function BuilderPage() {
             pages outgrow the column. */}
         <aside className="flex flex-col gap-2 border-b border-line p-2 md:h-full md:min-h-0 md:border-b-0 md:border-r">
           <HoverHighlight className="flex min-h-0 flex-1 flex-col gap-2">
-            <RailRow active={activeScreen === 'welcome'} onClick={() => goToScreen('welcome')} icon={Sparkle} label="Introduction" done={ready.welcome} />
+            <RailRow active={activeScreen === 'welcome'} onClick={() => goToScreen('welcome')} icon={Sparkle} label="Introduction" done={ready.welcome} marks={marks.railMarks.welcome} />
 
             <div className="flex min-h-0 flex-col rounded-2xl bg-black/[0.05] p-1.5">
               {/* The list is not `flex-1`: Add content belongs directly under the
@@ -810,6 +958,7 @@ export default function BuilderPage() {
                     icon={PAGE_META[p.type].icon}
                     label={p.title || PAGE_META[p.type].label}
                     done={pageReady(p, options, widgets)}
+                    marks={marks.railMarks[p.id]}
                     onClick={() => goToScreen(p.id)}
                     onDuplicate={() => duplicatePage(p.id)}
                     onDelete={() => requestDeletePage(p.id)}
@@ -829,7 +978,7 @@ export default function BuilderPage() {
               {!locked && <AddPage onAdd={() => addPage('feedback')} />}
             </div>
 
-            <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon={FlagCheckered} label="End screen" done={ready.thankyou} />
+            <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon={FlagCheckered} label="End screen" done={ready.thankyou} marks={marks.railMarks.end} />
           </HoverHighlight>
         </aside>
 
@@ -900,6 +1049,8 @@ export default function BuilderPage() {
                     readOnly={locked}
                     showPublishErrors={publishErrorScreen === screen.page.id}
                     missingFeedbackPage={missingFeedbackPage}
+                    optionMarks={marks.optionMarks}
+                    inputMarks={marks.inputMarks}
                   />
                 )}
                 {screen.id === 'end' && (
@@ -1041,14 +1192,34 @@ function tileClass(done?: boolean): string {
   }`
 }
 
-function RailRow({ active, onClick, icon: Icon, label, done }: { active: boolean; onClick: () => void; icon: PhosphorIcon; label: string; done?: boolean }) {
+function RailRow({ active, onClick, icon: Icon, label, done, marks }: { active: boolean; onClick: () => void; icon: PhosphorIcon; label: string; done?: boolean; marks?: PeerMark[] }) {
   return (
     <button type="button" onClick={onClick} data-hl className={`relative flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition ${active ? 'bg-black/[0.06]' : ''}`}>
       <span className={tileClass(done)}>
         <Icon size={13} aria-hidden="true" />
       </span>
       <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
+      <PeerDots marks={marks} />
     </button>
+  )
+}
+
+/**
+ * Who is on this screen, as dots in their avatar colours.
+ *
+ * The rail is the only place that can say where someone is when they're *not* on
+ * the screen you're looking at — the canvas outlines only cover what's in front
+ * of you. Dots rather than faces: at this size initials are unreadable, and the
+ * colour is the part that carries the meaning.
+ */
+function PeerDots({ marks }: { marks?: PeerMark[] }) {
+  if (!marks?.length) return null
+  return (
+    <span className="flex flex-none items-center gap-0.5" aria-hidden="true">
+      {marks.slice(0, 3).map((m, i) => (
+        <span key={`${m.color}-${i}`} className="u-circle h-1.5 w-1.5 rounded-full" style={{ backgroundColor: m.color }} />
+      ))}
+    </span>
   )
 }
 
@@ -1065,12 +1236,15 @@ function PageRow({
   deletable = true,
   onReorder,
   readOnly = false,
+  marks,
 }: {
   index: number
   active: boolean
   icon: PhosphorIcon
   label: string
   done: boolean
+  /** Collaborators currently on this page — see PeerDots. */
+  marks?: PeerMark[]
   onClick: () => void
   onDuplicate: () => void
   onDelete: () => void
@@ -1124,6 +1298,9 @@ function PageRow({
           <Icon size={13} aria-hidden="true" />
         </span>
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
+        {/* Sits before the hover actions, which replace nothing — the dots stay
+            visible while you reach for Duplicate. */}
+        <PeerDots marks={marks} />
       </button>
       {/* Hidden until hover, so the row's width is spent on the title. */}
       {!readOnly && (

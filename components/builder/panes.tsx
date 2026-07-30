@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
+import type { PeerMark } from '@/lib/presence'
 import { MAX_WIDGETS, defaultNeutralLabel, neutralChoiceLabel } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
 import { brightnessStyle } from '@/lib/image'
@@ -124,6 +125,8 @@ export function PageCenter({
   readOnly = false,
   showPublishErrors = false,
   missingFeedbackPage = false,
+  optionMarks,
+  inputMarks,
 }: {
   page: Page
   options: Option[]
@@ -151,6 +154,9 @@ export function PageCenter({
   showPublishErrors?: boolean
   /** The form contains context pages only, so publishing needs one changed to Get Vote. */
   missingFeedbackPage?: boolean
+  /** Collaborators' selections, by option id and by input id — see PeerMark. */
+  optionMarks?: Record<string, PeerMark>
+  inputMarks?: Record<string, PeerMark>
 }) {
   const feedback = page.type === 'feedback'
   const missingTitle = showPublishErrors && feedback && !page.title.trim()
@@ -209,6 +215,7 @@ export function PageCenter({
               onDelete={() => onDeleteOption(o.id)}
               onOpenMedia={() => onOpenMedia(o.id)}
               onZoom={setZoom}
+              mark={optionMarks?.[o.id]}
             />
           ))}
           {!optionFull && !readOnly && (
@@ -286,6 +293,7 @@ export function PageCenter({
                 onSelect={() => onSelectInput(w.id)}
                 onChange={(p) => patchWidget(w.id, p)}
                 onDelete={() => onDeleteInput(w.id)}
+                mark={inputMarks?.[w.id]}
               />
             ))}
             {widgets.length < MAX_WIDGETS && !readOnly && <WidgetSlot onAddInput={onAddInput} onClick={onFlashInputs} />}
@@ -306,6 +314,7 @@ function OptionCard({
   onDelete,
   onOpenMedia,
   onZoom,
+  mark,
 }: {
   option: Option
   letter: string
@@ -317,12 +326,19 @@ function OptionCard({
   onDelete: () => void
   onOpenMedia: () => void
   onZoom: (option: Option) => void
+  /** Set when a collaborator has this card selected. */
+  mark?: PeerMark
 }) {
   return (
     <div
       onClick={onSelect}
-      className={`group flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card transition ${selected ? 'border-ink' : 'border-line hover:border-line-strong'}`}
+      // An outline rather than a border for the collaborator's ring: the border is
+      // already spoken for by your own selection, and the two need to be able to
+      // show at once — you and someone else can be on the same card.
+      style={mark ? { outline: `2px solid ${mark.color}`, outlineOffset: '2px' } : undefined}
+      className={`group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card transition ${selected ? 'border-ink' : 'border-line hover:border-line-strong'}`}
     >
+      <PeerTag mark={mark} />
       {/* Static media is context, not a choice — there's nothing to label or tell
           apart, so the A/B letter and the name/description editors are dropped
           and the card is only the media, matching what the voter sees. Delete
@@ -455,6 +471,7 @@ function InputCard({
   onSelect,
   onChange,
   onDelete,
+  mark,
 }: {
   widget: Widget
   selected: boolean
@@ -463,6 +480,8 @@ function InputCard({
   onSelect: () => void
   onChange: (p: Partial<Widget>) => void
   onDelete: () => void
+  /** Set when a collaborator has this card selected. */
+  mark?: PeerMark
 }) {
   const c = widget.config
   const showTitle = c.showTitle !== false
@@ -472,10 +491,12 @@ function InputCard({
     <div
       data-widget={widget.id}
       onClick={onSelect}
+      style={mark ? { outline: `2px solid ${mark.color}`, outlineOffset: '2px' } : undefined}
       className={`group relative cursor-pointer rounded-2xl border p-4 transition ${
         selected ? 'border-ink' : 'border-line hover:border-line-strong'
       } ${flash ? 'u-flash' : ''}`}
     >
+      <PeerTag mark={mark} />
       {/* Delete — a black cross sitting centered on the card's top edge. */}
       <button
         type="button"
@@ -500,6 +521,27 @@ function InputCard({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Whose outline this is. The colour alone answers "someone else is in here"; with
+ * two collaborators on one page it takes a name to say which of them, and the
+ * avatar in the header is the key to read it by.
+ *
+ * Bottom-right: the top of both cards is taken (the A/B letter and the name
+ * fields on an option, the delete cross on an input), and the corner it sits in
+ * is the one place nothing is ever clicked.
+ */
+function PeerTag({ mark }: { mark?: PeerMark }) {
+  if (!mark) return null
+  return (
+    <span
+      className="pointer-events-none absolute bottom-0 right-0 z-20 rounded-tl-lg px-1.5 py-0.5 text-[11px] font-semibold leading-tight text-white"
+      style={{ backgroundColor: mark.color }}
+    >
+      {mark.name}
+    </span>
   )
 }
 
