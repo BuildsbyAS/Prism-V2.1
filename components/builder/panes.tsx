@@ -336,7 +336,7 @@ function OptionCard({
       // An outline rather than a border for the collaborator's ring: the border is
       // already spoken for by your own selection, and the two need to be able to
       // show at once — you and someone else can be on the same card.
-      style={mark ? { outline: `2px solid ${mark.color}`, outlineOffset: '2px' } : undefined}
+      style={mark ? { outline: `3px solid ${mark.color}`, outlineOffset: '3px' } : undefined}
       className={`group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card transition ${selected ? 'border-ink' : 'border-line hover:border-line-strong'}`}
     >
       <PeerTag mark={mark} />
@@ -498,7 +498,7 @@ function InputCard({
     <div
       data-widget={widget.id}
       onClick={onSelect}
-      style={mark ? { outline: `2px solid ${mark.color}`, outlineOffset: '2px' } : undefined}
+      style={mark ? { outline: `3px solid ${mark.color}`, outlineOffset: '3px' } : undefined}
       className={`group relative cursor-pointer rounded-2xl border p-4 transition ${
         selected ? 'border-ink' : 'border-line hover:border-line-strong'
       } ${flash ? 'u-flash' : ''}`}

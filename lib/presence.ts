@@ -136,6 +136,8 @@ interface Wire {
   email?: string
   screen?: string
   selection?: string | null
+  /** When this tab last navigated or selected something; heartbeats preserve it. */
+  activityAt?: number
   edit?: DocEdit
 }
 
@@ -145,8 +147,22 @@ interface Entry {
   email: string
   screen: string
   selection: string | null
-  /** Last heartbeat, ms — what actually decides whether a tab is still open. */
-  at: number
+  /** Last heartbeat received, ms — what decides whether a tab is still open. */
+  seenAt: number
+  /**
+   * Last real navigation/selection in this tab.
+   *
+   * This deliberately does not advance with a heartbeat. If one collaborator
+   * has two editor tabs open, an idle tab must not beat the tab they are
+   * actively using merely because its heartbeat happened to arrive last.
+   */
+  activityAt: number
+}
+
+interface Where {
+  screen: string
+  selection: string | null
+  activityAt: number
 }
 
 /**
@@ -190,6 +206,7 @@ export function useFormRoom({
   onEdit?: (edit: DocEdit) => void
 }): { me: string | null; peers: PresencePeer[]; send: (edit: DocEdit) => void } {
   const [tabId] = useState(newTabId)
+  const [joinedAt] = useState(Date.now)
   // Demo mode's stand-in identity. Read once, in a lazy initialiser rather than
   // an effect, so `me` is a plain derived value and the first render already
   // knows who it is.
@@ -203,8 +220,8 @@ export function useFormRoom({
   // What to publish, and the caller's handlers. All in refs so neither a
   // navigation nor a re-render tears the channel down: resubscribing on every
   // keystroke would make everyone else's stack flicker.
-  const whereRef = useRef({ screen, selection })
-  const publishRef = useRef<((where: { screen: string; selection: string | null }) => void) | null>(null)
+  const whereRef = useRef<Where>({ screen, selection, activityAt: joinedAt })
+  const publishRef = useRef<((where: Where) => void) | null>(null)
   const sendRef = useRef<((edit: DocEdit) => void) | null>(null)
   const movedRef = useRef(onPeerLocation)
   const editedRef = useRef(onEdit)
@@ -220,11 +237,27 @@ export function useFormRoom({
     // Which location each tab was last seen at, so a real screen/selection move
     // can be told apart from a heartbeat repeating the same presence payload.
     const wasAt = new Map<string, { screen: string; selection: string | null }>()
-    const mark = (id: string, email: string, at: string, selection: string | null) => {
+    const mark = (
+      id: string,
+      email: string,
+      at: string,
+      selection: string | null,
+      activityAt = Date.now(),
+    ) => {
       const previous = wasAt.get(id)
       const moved = previous?.screen !== at || previous.selection !== selection
       wasAt.set(id, { screen: at, selection })
-      setTabs((prev) => ({ ...prev, [id]: { room: formId, email, screen: at, selection, at: Date.now() } }))
+      setTabs((prev) => ({
+        ...prev,
+        [id]: {
+          room: formId,
+          email,
+          screen: at,
+          selection,
+          seenAt: Date.now(),
+          activityAt,
+        },
+      }))
       if (moved) movedRef.current?.(email, at, selection)
     }
     const drop = (id: string) => {
@@ -245,7 +278,12 @@ export function useFormRoom({
       })
       channel
         .on('presence', { event: 'sync' }, () => {
-          const state = channel.presenceState<{ email: string; screen: string; selection: string | null }>()
+          const state = channel.presenceState<{
+            email: string
+            screen: string
+            selection: string | null
+            activityAt?: number
+          }>()
           const seen = new Set<string>()
           for (const [key, entries] of Object.entries(state)) {
             const entry = entries[0]
@@ -253,7 +291,13 @@ export function useFormRoom({
             // would trail a round trip behind the one on screen.
             if (key === tabId || !entry?.email) continue
             seen.add(key)
-            mark(key, entry.email, entry.screen ?? 'welcome', entry.selection ?? null)
+            mark(
+              key,
+              entry.email,
+              entry.screen ?? 'welcome',
+              entry.selection ?? null,
+              entry.activityAt,
+            )
           }
           // The server's roster is authoritative about who left, so anyone
           // missing from a sync is gone — no heartbeat needed to notice.
@@ -293,7 +337,15 @@ export function useFormRoom({
         say(here())
         return
       }
-      if (msg.email) mark(msg.tabId, msg.email, msg.screen ?? 'welcome', msg.selection ?? null)
+      if (msg.email) {
+        mark(
+          msg.tabId,
+          msg.email,
+          msg.screen ?? 'welcome',
+          msg.selection ?? null,
+          msg.activityAt,
+        )
+      }
     }
     say({ type: 'who', tabId })
     say(here())
@@ -307,7 +359,7 @@ export function useFormRoom({
       setTabs((prev) => {
         const next: Record<string, Entry> = {}
         for (const [id, p] of Object.entries(prev)) {
-          if (p.at > cutoff) next[id] = p
+          if (p.seenAt > cutoff) next[id] = p
           else wasAt.delete(id)
         }
         return next
@@ -332,12 +384,21 @@ export function useFormRoom({
   // Tell the others where you are now. In an effect, so it runs after the join
   // above has had a chance to install a publisher.
   useEffect(() => {
-    whereRef.current = { screen, selection }
-    publishRef.current?.({ screen, selection })
+    const activityAt = Math.max(Date.now(), whereRef.current.activityAt + 1)
+    const where = { screen, selection, activityAt }
+    whereRef.current = where
+    publishRef.current?.(where)
   }, [screen, selection])
 
   const send = useCallback((edit: DocEdit) => {
     if (!sendRef.current) return
+    // Editing is activity too. A collaborator may keep typing in the same field,
+    // so their screen and selection do not change; advancing the activity clock
+    // here still keeps that working tab ahead of an idle duplicate tab.
+    const activityAt = Math.max(Date.now(), whereRef.current.activityAt + 1)
+    const where = { ...whereRef.current, activityAt }
+    whereRef.current = where
+    publishRef.current?.(where)
     // Too big for the wire — tell them to read it from storage instead. Measured
     // rather than assumed: only media-carrying patches ever get near the cap.
     if (edit.t !== 'reload' && JSON.stringify(edit).length > MAX_EDIT_BYTES) {
@@ -352,10 +413,13 @@ export function useFormRoom({
     // You first — the anchor for everything beside you.
     const out: PresencePeer[] = [{ email: me, screen, selection, self: true }]
     const seen = new Set([me.trim().toLowerCase()])
-    // Freshest tab wins, so someone with two tabs open shows on the screen they
-    // most recently touched. Entries are also filtered by form: opening another
-    // form reuses this hook, and its roster must not inherit the last one's.
-    for (const entry of Object.values(tabs).sort((a, b) => b.at - a.at)) {
+    // The tab they most recently interacted with wins, not the one whose
+    // heartbeat arrived last. Entries are also filtered by form: opening
+    // another form reuses this hook, and its roster must not inherit the last
+    // one's.
+    for (const entry of Object.values(tabs).sort(
+      (a, b) => b.activityAt - a.activityAt || b.seenAt - a.seenAt,
+    )) {
       if (entry.room !== formId) continue
       const key = entry.email.trim().toLowerCase()
       if (seen.has(key)) continue

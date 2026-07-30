@@ -377,17 +377,27 @@ export default function BuilderPage() {
     const optionMarks: Record<string, PeerMark> = {}
     const inputMarks: Record<string, PeerMark> = {}
     const railMarks: Record<string, PeerMark[]> = {}
-    for (const peer of peers) {
-      if (peer.self) continue
+    const screenMarks: Record<string, PeerMark & { email: string }> = {}
+    // Put the followed editor first when several collaborators have the same
+    // page itself selected, so the canvas frame always belongs to the person
+    // whose view is being mirrored.
+    const others = peers
+      .filter((peer) => !peer.self)
+      .sort((a, b) => {
+        const aFollowed = a.email.toLowerCase() === following?.toLowerCase()
+        const bFollowed = b.email.toLowerCase() === following?.toLowerCase()
+        return Number(bFollowed) - Number(aFollowed)
+      })
+    for (const peer of others) {
       const mark: PeerMark = { color: personColor(peer.email), name: personName(peer.email).split(' ')[0] }
       ;(railMarks[peer.screen] ??= []).push(mark)
       const [kind, id] = (peer.selection ?? '').split(':')
-      if (!id) continue
-      if (kind === 'option') optionMarks[id] = mark
-      else if (kind === 'input') inputMarks[id] = mark
+      if (id && kind === 'option') optionMarks[id] = mark
+      else if (id && kind === 'input') inputMarks[id] = mark
+      else if (!screenMarks[peer.screen]) screenMarks[peer.screen] = { ...mark, email: peer.email }
     }
-    return { optionMarks, inputMarks, railMarks }
-  }, [peers])
+    return { optionMarks, inputMarks, railMarks, screenMarks }
+  }, [peers, following])
 
   /** How a screen is named in a presence tooltip — the rail's own wording. */
   const screenLabel = useCallback(
@@ -1092,7 +1102,16 @@ export default function BuilderPage() {
           >
             <p className="mb-3 px-1 text-[13px] font-medium text-muted">{screen.label}</p>
             <div
-              className={`@container flex min-h-[520px] items-center rounded-[28px] border border-line bg-card px-[28px] pt-14 pb-8 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] ${
+              data-collaborator-frame={marks.screenMarks[screen.id]?.email}
+              style={
+                marks.screenMarks[screen.id]
+                  ? {
+                      outline: `3px solid ${marks.screenMarks[screen.id].color}`,
+                      outlineOffset: '3px',
+                    }
+                  : undefined
+              }
+              className={`@container relative flex min-h-[520px] items-center rounded-[28px] border border-line bg-card px-[28px] pt-14 pb-8 shadow-[0_1px_2px_rgba(0,0,0,0.03),0_16px_44px_-24px_rgba(0,0,0,0.18)] ${
                 screenFit ? 'md:min-h-0 md:items-stretch' : ''
               } ${fillHeight ? 'md:flex-1' : ''} ${
                 // 1512×982 — the MacBook 14" logical resolution. Height follows
@@ -1101,6 +1120,15 @@ export default function BuilderPage() {
                 laptopAspect ? 'md:aspect-[1512/982] md:flex-none' : ''
               }`}
             >
+              {marks.screenMarks[screen.id] && (
+                <span
+                  data-collaborator-selection-label
+                  className="pointer-events-none absolute right-6 top-0 z-20 -translate-y-full rounded-t-lg px-2 py-1 text-[11px] font-semibold leading-tight text-white"
+                  style={{ backgroundColor: marks.screenMarks[screen.id].color }}
+                >
+                  {marks.screenMarks[screen.id].name}
+                </span>
+              )}
               {/* data-screen names what the canvas is showing. Nothing styles it;
                   it's what tells you which screen you're on from the outside —
                   the rail marks the active row with a background alone. */}
