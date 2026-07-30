@@ -29,6 +29,25 @@ returns boolean language sql stable as $$
           or lower(auth.jwt() ->> 'email') = any (array(select lower(c) from unnest(collaborators) c)))
 $$;
 
+-- View access includes owners, editors, and view-only collaborators.
+create or replace function public.can_view_form(
+  creator uuid,
+  collaborators text[],
+  viewers text[]
+)
+returns boolean language sql stable as $$
+  select public.is_noon_user()
+     and (
+       creator = auth.uid()
+       or lower(auth.jwt() ->> 'email') = any (
+         array(select lower(c) from unnest(coalesce(collaborators, '{}'::text[])) c)
+       )
+       or lower(auth.jwt() ->> 'email') = any (
+         array(select lower(v) from unnest(coalesce(viewers, '{}'::text[])) v)
+       )
+     )
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Tables
 -- ---------------------------------------------------------------------------
@@ -50,6 +69,7 @@ create table if not exists public.forms (
   status                 text not null default 'draft'  check (status in ('draft','open','closed')),
   pod                    text not null default '',               -- owning pod, chosen at publish
   collaborators          text[] not null default '{}',            -- @noon.com emails who can edit alongside the creator
+  viewers                text[] not null default '{}',            -- @noon.com emails with read-only builder access
   expires_at             timestamptz,                            -- stops taking responses after this
   show_results_to_voters boolean not null default false,         -- the "let voters see results" toggle
   require_voter_login    boolean not null default false,
@@ -76,6 +96,67 @@ alter table public.forms add constraint forms_publish_details check (
       and btrim(pod) <> ''
       and expires_at is not null)
 );
+
+alter table public.forms drop constraint if exists forms_collaborator_roles_do_not_overlap;
+alter table public.forms add constraint forms_collaborator_roles_do_not_overlap
+  check (not collaborators && viewers);
+
+-- Editors may update form content, but only the owner may change ownership or
+-- collaborator roles.
+create or replace function public.protect_form_access()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_role text := coalesce(auth.jwt() ->> 'role', '');
+begin
+  new.collaborators := array(
+    select distinct lower(btrim(email)) as normalized
+      from unnest(coalesce(new.collaborators, '{}'::text[])) email
+     where btrim(email) <> ''
+     order by normalized
+  );
+  new.viewers := array(
+    select distinct lower(btrim(email)) as normalized
+      from unnest(coalesce(new.viewers, '{}'::text[])) email
+     where btrim(email) <> ''
+     order by normalized
+  );
+
+  if exists (
+    select 1
+      from unnest(new.collaborators || new.viewers) email
+     where lower(email) not like '%@noon.com'
+  ) then
+    raise exception 'Collaborators must use @noon.com accounts' using errcode = '22023';
+  end if;
+
+  if new.collaborators && new.viewers then
+    raise exception 'A collaborator cannot have both edit and view access' using errcode = '22023';
+  end if;
+
+  if v_role <> 'service_role' then
+    if new.creator_id is distinct from old.creator_id then
+      raise exception 'Form ownership cannot be transferred' using errcode = '42501';
+    end if;
+    if auth.uid() is distinct from old.creator_id
+       and (
+         new.collaborators is distinct from old.collaborators
+         or new.viewers is distinct from old.viewers
+       ) then
+      raise exception 'Only the owner can manage collaborators' using errcode = '42501';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_form_access on public.forms;
+create trigger protect_form_access
+before update of creator_id, collaborators, viewers on public.forms
+for each row execute function public.protect_form_access();
 
 -- Ordered content pages between the welcome and end screens.
 create table if not exists public.pages (
@@ -158,8 +239,8 @@ create policy "read pages" on public.pages for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
                  where f.id = form_id
-                   and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators)
+                   and (f.status = 'open'
+                        or public.can_view_form(f.creator_id, f.collaborators, f.viewers)
                         or (f.status = 'closed' and auth.uid() is not null
                             and public.is_noon_user()))));
 
@@ -176,8 +257,8 @@ create policy "owner write pages" on public.pages for all
 drop policy if exists "read open forms" on public.forms;
 create policy "read open forms" on public.forms for select
   to anon, authenticated
-  using (status = 'open' or creator_id = auth.uid()
-         or public.is_editor(creator_id, collaborators)
+  using (status = 'open'
+         or public.can_view_form(creator_id, collaborators, viewers)
          or (status = 'closed' and auth.uid() is not null
              and public.is_noon_user()));
 
@@ -204,8 +285,8 @@ create policy "read options" on public.options for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
                  where f.id = form_id
-                   and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators)
+                   and (f.status = 'open'
+                        or public.can_view_form(f.creator_id, f.collaborators, f.viewers)
                         or (f.status = 'closed' and auth.uid() is not null
                             and public.is_noon_user()))));
 
@@ -222,8 +303,8 @@ create policy "read widgets" on public.widgets for select
   to anon, authenticated
   using (exists (select 1 from public.forms f
                  where f.id = form_id
-                   and (f.status = 'open' or f.creator_id = auth.uid()
-                        or public.is_editor(f.creator_id, f.collaborators)
+                   and (f.status = 'open'
+                        or public.can_view_form(f.creator_id, f.collaborators, f.viewers)
                         or (f.status = 'closed' and auth.uid() is not null
                             and public.is_noon_user()))));
 
@@ -461,7 +542,7 @@ grant execute on function public.form_voters(uuid) to authenticated;
 -- equal. `creator_id` is an auth.users id and auth.users is unreadable from a
 -- client, hence the definer function.
 --
--- Scoped to that form's own editors: this reveals one colleague's address to
+-- Scoped to that form's collaborators: this reveals one colleague's address to
 -- people already working with them on that form, and nothing to anybody else.
 -- Not a general id→email lookup, which is what a table would have been.
 create or replace function public.form_owner_email(p_form_id uuid)
@@ -469,13 +550,13 @@ returns text
 language sql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
   select u.email::text
     from public.forms f
     join auth.users u on u.id = f.creator_id
    where f.id = p_form_id
-     and public.is_editor(f.creator_id, f.collaborators);
+     and public.can_view_form(f.creator_id, f.collaborators, f.viewers);
 $$;
 
 revoke all on function public.form_owner_email(uuid) from public;
@@ -506,6 +587,7 @@ returns table (
   expires_at        timestamptz,
   pod               text,
   collaborators     text[],
+  viewers           text[],
   hero_image_url    text,
   hero_bg           text,
   hero_dither       boolean,
@@ -530,6 +612,7 @@ as $$
          f.expires_at,
          f.pod,
          f.collaborators,
+         f.viewers,
          f.hero_image_url,
          f.hero_bg,
          f.hero_dither,
@@ -827,6 +910,9 @@ begin
       union
       select lower(c)
         from unnest(coalesce(new.collaborators, '{}'::text[])) c
+      union
+      select lower(v)
+        from unnest(coalesce(new.viewers, '{}'::text[])) v
     loop
       insert into public.notifications (
         recipient_email, form_id, event_type, event_key, title, message, action_path
@@ -844,9 +930,18 @@ begin
   end if;
 
   for v_email in
-    select lower(c) from unnest(coalesce(new.collaborators, '{}'::text[])) c
-    except
-    select lower(c) from unnest(coalesce(old.collaborators, '{}'::text[])) c
+    with old_access as (
+      select lower(c) as email from unnest(coalesce(old.collaborators, '{}'::text[])) c
+      union
+      select lower(v) from unnest(coalesce(old.viewers, '{}'::text[])) v
+    ),
+    new_access as (
+      select lower(c) as email from unnest(coalesce(new.collaborators, '{}'::text[])) c
+      union
+      select lower(v) from unnest(coalesce(new.viewers, '{}'::text[])) v
+    )
+    select n.email from new_access n
+     where not exists (select 1 from old_access o where o.email = n.email)
   loop
     insert into public.notifications (
       recipient_email, form_id, event_type, event_key, title, message, action_path
@@ -855,15 +950,24 @@ begin
       v_email, new.id, 'collaborator_added',
       'collaborator-added:' || new.id::text || ':' || gen_random_uuid()::text,
       'Added as collaborator',
-      'You can now edit “' || v_title || '” and see its complete results.',
+      'You now have access to “' || v_title || '”.',
       '/creator/' || new.id::text || '/edit'
     );
   end loop;
 
   for v_email in
-    select lower(c) from unnest(coalesce(old.collaborators, '{}'::text[])) c
-    except
-    select lower(c) from unnest(coalesce(new.collaborators, '{}'::text[])) c
+    with old_access as (
+      select lower(c) as email from unnest(coalesce(old.collaborators, '{}'::text[])) c
+      union
+      select lower(v) from unnest(coalesce(old.viewers, '{}'::text[])) v
+    ),
+    new_access as (
+      select lower(c) as email from unnest(coalesce(new.collaborators, '{}'::text[])) c
+      union
+      select lower(v) from unnest(coalesce(new.viewers, '{}'::text[])) v
+    )
+    select o.email from old_access o
+     where not exists (select 1 from new_access n where n.email = o.email)
   loop
     insert into public.notifications (
       recipient_email, form_id, event_type, event_key, title, message, action_path
@@ -872,7 +976,7 @@ begin
       v_email, new.id, 'collaborator_removed',
       'collaborator-removed:' || new.id::text || ':' || gen_random_uuid()::text,
       'Removed as collaborator',
-      'You no longer have editor access to “' || v_title || '”.',
+      'You no longer have access to “' || v_title || '”.',
       '/creator'
     );
   end loop;
@@ -883,7 +987,7 @@ $$;
 
 drop trigger if exists notify_form_change on public.forms;
 create trigger notify_form_change
-after update of status, published_at, collaborators on public.forms
+after update of status, published_at, collaborators, viewers on public.forms
 for each row execute function public.notify_form_change();
 
 create or replace function public.notify_vote_received()

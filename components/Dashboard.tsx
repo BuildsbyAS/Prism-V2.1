@@ -148,6 +148,7 @@ interface ListItem {
   lastResponseAt: string | null
   /** My Forms: collaborators are editors, but only the creator may delete. */
   isOwner?: boolean
+  access?: 'owner' | 'edit' | 'view'
   creator?: { email: string; mine: boolean }
   /** Team only: whether this viewer has already submitted the form. */
   hasResponded?: boolean
@@ -177,6 +178,7 @@ function toListItems(
 function entryHref(item: ListItem, tab: DashboardTab): string {
   if (tab === 'team') return `/f/${item.form.slug}`
   if (!item.creator || item.creator.mine) {
+    if (item.access === 'view') return `/creator/${item.form.id}/edit`
     return item.form.status === 'closed'
       ? `/creator/${item.form.id}/results`
       : `/creator/${item.form.id}/edit`
@@ -629,6 +631,7 @@ function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListIt
   const href = entryHref(item, tab)
   const opensSharedForm = tab === 'team'
   const mine = !creator || creator.mine
+  const viewOnly = item.access === 'view'
   // font-sans opts out of the global pixel heading rule — form titles are
   // content, not display type, so they read better in Geist Sans.
   const body = (
@@ -651,7 +654,11 @@ function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListIt
   const owner = creator?.email ?? viewerEmail
   const faces: { email: string; label: string }[] = []
   const seen = new Set<string>()
-  for (const email of [...(owner ? [owner] : []), ...(form.collaborators ?? [])]) {
+  for (const email of [
+    ...(owner ? [owner] : []),
+    ...(form.collaborators ?? []),
+    ...(form.viewers ?? []),
+  ]) {
     const key = email.trim().toLowerCase()
     if (!key || seen.has(key)) continue
     seen.add(key)
@@ -792,11 +799,21 @@ function FormCard({ item, tab, viewerEmail, onDelete, onRename }: { item: ListIt
         </p>
         {mine ? (
           <Link
-            href={form.status === 'draft' ? `/creator/${form.id}/edit` : `/creator/${form.id}/results`}
-            aria-label={form.status === 'draft' ? `Edit ${title}` : `Results for ${title}`}
+            href={
+              viewOnly || form.status === 'draft'
+                ? `/creator/${form.id}/edit`
+                : `/creator/${form.id}/results`
+            }
+            aria-label={
+              viewOnly
+                ? `View ${title}`
+                : form.status === 'draft'
+                  ? `Edit ${title}`
+                  : `Results for ${title}`
+            }
             className="rounded-[12px] bg-black/[0.045] px-8 py-2 text-center text-[13px] font-semibold text-ink transition hover:bg-black/[0.08]"
           >
-            {form.status === 'draft' ? 'Edit' : 'Results'}
+            {viewOnly ? 'View' : form.status === 'draft' ? 'Edit' : 'Results'}
           </Link>
         ) : (
           <TeamEntryActions form={form} title={title} hasResponded={hasResponded} />
@@ -828,6 +845,7 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
   const href = entryHref(item, tab)
   const opensSharedForm = tab === 'team'
   const mine = !creator || creator.mine
+  const viewOnly = item.access === 'view'
   const body = (
     <>
       <h2 className="truncate font-sans text-[15px] font-semibold tracking-tight">{title}</h2>
@@ -925,7 +943,15 @@ function FormRow({ item, tab, onDelete, onRename }: { item: ListItem; tab: Dashb
             theirs · either → Preview       (read-only, with a Results tab) */}
       <div className="relative z-10 flex w-[184px] shrink-0 items-center justify-end gap-1.5">
         {mine ? (
-          form.status === 'draft' ? (
+          viewOnly ? (
+            <Link
+              href={`/creator/${form.id}/edit`}
+              aria-label={`View ${title}`}
+              className="hidden rounded-[12px] bg-black/[0.045] px-3 py-1.5 text-[13px] font-semibold text-ink transition hover:bg-black/[0.08] sm:block"
+            >
+              View
+            </Link>
+          ) : form.status === 'draft' ? (
             <Link
               href={`/creator/${form.id}/edit`}
               aria-label={`Edit ${title}`}

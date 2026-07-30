@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import type { Form, Option, Page, PageType, Widget, WidgetType } from '@/lib/types'
-import { getFullForm, saveFullForm, isStorageFull, getFormOwnerEmail } from '@/lib/store'
+import { getFullForm, saveFullForm, isStorageFull, getFormOwnerEmail, updateFormAccess } from '@/lib/store'
 import { useCurrentUser } from '@/lib/auth'
+import { canEditForm, formAccess } from '@/lib/access'
 import { useFormRoom, type DocEdit, type PeerMark } from '@/lib/presence'
 import { personColor, personName } from '@/lib/format'
 import {
@@ -27,7 +28,7 @@ import {
   type Selection,
 } from '@/lib/builder'
 import type { Icon as PhosphorIcon } from '@phosphor-icons/react'
-import { ArrowCounterClockwise, ArrowLeft, CopySimple, DotsSixVertical, FlagCheckered, Plus, Sparkle, Trash } from '@phosphor-icons/react'
+import { ArrowCounterClockwise, ArrowLeft, CopySimple, DotsSixVertical, FlagCheckered, Plus, Sparkle, Trash, UserPlus } from '@phosphor-icons/react'
 import HoverHighlight from '@/components/HoverHighlight'
 import Tooltip from '@/components/Tooltip'
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -40,6 +41,7 @@ import { PageProperties, OptionProperties, InputProperties, WelcomeProperties, E
 import DeviceSwitch, { DEVICE_MAX_WIDTH, type Device } from '@/components/builder/DeviceSwitch'
 import FormHeader from '@/components/builder/FormHeader'
 import PresenceBar from '@/components/builder/PresenceBar'
+import CollaboratorDialog from '@/components/builder/CollaboratorDialog'
 import CanvasNudge from '@/components/builder/CanvasNudge'
 import MediaModal from '@/components/builder/MediaModal'
 import PanelResizer, { useRailWidth, usePanelWidth } from '@/components/builder/PanelResizer'
@@ -97,6 +99,7 @@ export default function BuilderPage() {
   const [mediaFor, setMediaFor] = useState<string | null>(null)
   const [heroMedia, setHeroMedia] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
+  const [collaboratorsOpen, setCollaboratorsOpen] = useState(false)
   // Set only after Publish is pressed. It keeps validation quiet while the
   // creator is drafting, then marks the first screen that needs attention.
   const [publishErrorScreen, setPublishErrorScreen] = useState<string | null>(null)
@@ -120,6 +123,7 @@ export default function BuilderPage() {
   // builder otherwise looks identical whether or not the write landed.
   const [saveError, setSaveError] = useState<string | null>(null)
   const isMobile = useIsMobile()
+  const { user } = useCurrentUser()
 
   const loadedRef = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -139,6 +143,10 @@ export default function BuilderPage() {
    * forgets to disable itself still cannot write.
    */
   const locked = form?.status === 'closed'
+  const access = form ? formAccess(form, user) : null
+  const editable = canEditForm(access)
+  const viewOnly = access === 'view'
+  const readOnly = locked || !editable
 
   // ---- Which screen the canvas shows ---------------------------------------
   // One screen at a time, chosen from the rail. The canvas used to stack all of
@@ -162,7 +170,6 @@ export default function BuilderPage() {
   // A form has collaborators, so the editor has to be able to answer "is anyone
   // else in this right now" — renaming a page under someone, or publishing while
   // they're still writing, are both things you'd hold off on if you knew.
-  const { user } = useCurrentUser()
   const [ownerEmail, setOwnerEmail] = useState<string | null>(null)
   // Who is being followed, by address rather than by tab so it survives them
   // reloading. An address that is no longer in `peers` simply follows nobody:
@@ -445,7 +452,7 @@ export default function BuilderPage() {
   }, [])
 
   useEffect(() => {
-    if (!form || locked) return
+    if (!form || readOnly) return
     if (!loadedRef.current) {
       loadedRef.current = true
       return
@@ -459,7 +466,7 @@ export default function BuilderPage() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
-  }, [form, pages, options, widgets, persist, locked])
+  }, [form, pages, options, widgets, persist, readOnly])
 
   /**
    * Write whatever the debounce still owes on the way out.
@@ -482,25 +489,25 @@ export default function BuilderPage() {
   // patch goes out as it's typed rather than waiting for the 700ms autosave —
   // "real time" is the point, and a keystroke-sized patch is cheap.
   const patchForm = useCallback((p: Partial<Form>) => {
-    if (locked) return
+    if (readOnly) return
     setForm((f) => (f ? { ...f, ...p } : f))
     send({ t: 'form', patch: p })
-  }, [locked, send])
+  }, [readOnly, send])
   const patchPage = useCallback((id: string, p: Partial<Page>) => {
-    if (locked) return
+    if (readOnly) return
     setPages((ps) => ps.map((x) => (x.id === id ? { ...x, ...p } : x)))
     send({ t: 'page', id, patch: p })
-  }, [locked, send])
+  }, [readOnly, send])
   const patchOption = useCallback((key: string, p: Partial<Option>) => {
-    if (locked) return
+    if (readOnly) return
     setOptions((os) => os.map((o) => (o.id === key ? { ...o, ...p } : o)))
     send({ t: 'option', id: key, patch: p })
-  }, [locked, send])
+  }, [readOnly, send])
   const patchWidget = useCallback((key: string, p: Partial<Widget>) => {
-    if (locked) return
+    if (readOnly) return
     setWidgets((ws) => ws.map((w) => (w.id === key ? { ...w, ...p } : w)))
     send({ t: 'widget', id: key, patch: p })
-  }, [locked, send])
+  }, [readOnly, send])
 
   /**
    * Structural changes — add, delete, duplicate, reorder — go out as the whole
@@ -523,7 +530,7 @@ export default function BuilderPage() {
 
   // Pages
   function addPage(type: PageType, afterIndex = pages.length - 1) {
-    if (locked) return
+    if (readOnly) return
     if (!form) return
     const page = newPage(form.id, type, 0)
     const nextPages = pages.slice()
@@ -539,7 +546,7 @@ export default function BuilderPage() {
     setSel({ kind: 'page', id: page.id })
   }
   function deletePage(id: string) {
-    if (locked) return
+    if (readOnly) return
     putPages(pages.filter((p) => p.id !== id))
     putOptions(options.filter((o) => o.page_id !== id))
     putWidgets(widgets.filter((w) => w.page_id !== id))
@@ -551,7 +558,7 @@ export default function BuilderPage() {
    * This is what "delete" becomes for the last page standing.
    */
   function clearPage(id: string) {
-    if (locked) return
+    if (readOnly) return
     const page = pages.find((p) => p.id === id)
     if (!page || !form) return
     putPages(pages.map((p) => (p.id === id ? { ...p, title: '', body: '' } : p)))
@@ -576,7 +583,7 @@ export default function BuilderPage() {
    * no-op (see `canClearPage`).
    */
   function requestDeletePage(id: string) {
-    if (locked) return
+    if (readOnly) return
     const page = pages.find((p) => p.id === id)
     if (!page) return
     const kind = pages.length === 1 ? 'clear' : 'delete'
@@ -584,7 +591,7 @@ export default function BuilderPage() {
     else setPageAction({ id, kind })
   }
   function duplicatePage(id: string) {
-    if (locked) return
+    if (readOnly) return
     const page = pages.find((p) => p.id === id)
     if (!page) return
     const copy = dupPage(page)
@@ -597,7 +604,7 @@ export default function BuilderPage() {
     setSel({ kind: 'page', id: copy.id })
   }
   function reorderPages(from: number, to: number) {
-    if (locked) return
+    if (readOnly) return
     const next = pages.slice()
     const [item] = next.splice(from, 1)
     next.splice(to, 0, item)
@@ -606,7 +613,7 @@ export default function BuilderPage() {
 
   // Options / inputs (scoped to a page)
   function addOption(pageId: string) {
-    if (locked) return
+    if (readOnly) return
     if (!form) return
     const count = options.filter((o) => o.page_id === pageId).length
     const o = newOption(form.id, pageId, options.length, count)
@@ -614,13 +621,13 @@ export default function BuilderPage() {
     setSel({ kind: 'option', key: o.id })
   }
   function removeOption(key: string) {
-    if (locked) return
+    if (readOnly) return
     const o = options.find((x) => x.id === key)
     putOptions(options.filter((x) => x.id !== key))
     if (o) setSel({ kind: 'page', id: o.page_id })
   }
   function addInput(pageId: string, type: WidgetType) {
-    if (locked) return
+    if (readOnly) return
     if (!form) return
     const w = newWidget(form.id, pageId, type, widgets.length)
     putWidgets([...widgets, w])
@@ -630,7 +637,7 @@ export default function BuilderPage() {
     revealWidget(w.id)
   }
   function removeInput(key: string) {
-    if (locked) return
+    if (readOnly) return
     const w = widgets.find((x) => x.id === key)
     putWidgets(widgets.filter((x) => x.id !== key))
     if (w) setSel({ kind: 'page', id: w.page_id })
@@ -648,13 +655,13 @@ export default function BuilderPage() {
     })
   }, [widgets, patchWidget])
   function openMedia(key: string) {
-    if (locked) return
+    if (readOnly) return
     setSel({ kind: 'option', key })
     setMediaFor(key)
   }
 
   function publish() {
-    if (locked) return
+    if (readOnly) return
     if (!form) return
     // Belt and braces with the dialog's validation. A live form has to be
     // attributable (name, pod) and time-boxed (expiry) as much as it has to have
@@ -666,7 +673,7 @@ export default function BuilderPage() {
     void writeNow(next)
   }
   function unpublish() {
-    if (locked) return
+    if (readOnly) return
     if (!form) return
     const next: Form = { ...form, status: 'draft' }
     setForm(next)
@@ -693,9 +700,26 @@ export default function BuilderPage() {
    * debounced save still in flight would show them the previous version.
    */
   async function flushSave() {
-    if (!form || locked) return
+    if (!form || readOnly) return
     if (saveTimer.current) clearTimeout(saveTimer.current)
     await persist(form, pages, options, widgets)
+  }
+
+  async function changeAccess(next: { collaborators: string[]; viewers: string[] }) {
+    if (!form || access !== 'owner') return
+    const previous = {
+      collaborators: form.collaborators ?? [],
+      viewers: form.viewers ?? [],
+    }
+    setForm((current) => (current ? { ...current, ...next } : current))
+    send({ t: 'form', patch: next })
+    try {
+      await updateFormAccess(form.id, next.collaborators, next.viewers)
+    } catch (error) {
+      setForm((current) => (current ? { ...current, ...previous } : current))
+      send({ t: 'form', patch: previous })
+      throw error
+    }
   }
 
   if (notFound) {
@@ -816,7 +840,7 @@ export default function BuilderPage() {
    * The × is only for the current sitting.
    */
   const nextVotePage = pages.find((p) => p.type === 'feedback' && !pageReady(p, options, widgets))
-  const showIntroNudge = !locked && screen.id === 'welcome' && ready.welcome && !ready.middle && !nudgeDismissed
+  const showIntroNudge = !readOnly && screen.id === 'welcome' && ready.welcome && !ready.middle && !nudgeDismissed
 
   // The last page can only be emptied, so the rail and the properties panel both
   // offer Clear in place of Delete — and only when there is something to clear.
@@ -855,12 +879,12 @@ export default function BuilderPage() {
       <FormHeader
         formId={formId}
         tab="edit"
-        canSeeResults={hasResults(form)}
+        canSeeResults={hasResults(form) && (editable || form.show_results_to_voters)}
         // Renames the form, not the welcome headline it starts out showing.
         // Without a handler the name renders as plain text, which is what a
         // closed form wants.
         name={formName(form)}
-        onRename={locked ? undefined : (v) => patchForm({ name: v })}
+        onRename={readOnly ? undefined : (v) => patchForm({ name: v })}
         // Preview opens on the screen you were editing rather than back at the
         // introduction every time.
         previewQuery={`?start=${encodeURIComponent(activeScreen)}`}
@@ -874,6 +898,7 @@ export default function BuilderPage() {
           <span className="flex shrink-0 items-center gap-2">
             <StatusBadge status={form.status} />
             {locked && <span className="text-[13px] text-muted">read-only</span>}
+            {viewOnly && <span className="text-[13px] text-muted">view only</span>}
           </span>
         }
       >
@@ -884,7 +909,7 @@ export default function BuilderPage() {
         {/* "All changes autosaved" is a claim, so it only stands while it's
             true. A failed write says so instead — and stays visible at every
             width, unlike the reassurance, which is fine to drop on a narrow bar. */}
-        {!locked &&
+        {!readOnly &&
           (saveError ? (
             <span
               role="status"
@@ -911,7 +936,17 @@ export default function BuilderPage() {
           onFollow={follow}
           onStopFollowing={() => follow(null)}
         />
-        {locked ? null : publishButton}
+        {access === 'owner' && (
+          <button
+            type="button"
+            onClick={() => setCollaboratorsOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-[16px] border border-line-strong bg-card px-3.5 py-1.5 font-medium transition hover:bg-black/[0.03]"
+          >
+            <UserPlus size={15} aria-hidden="true" />
+            Add collaborator
+          </button>
+        )}
+        {readOnly ? null : publishButton}
       </FormHeader>
 
       {/* --rail and --panel are the two draggable columns (see PanelResizer).
@@ -927,11 +962,11 @@ export default function BuilderPage() {
           on a closed form it would be a panel of dead switches. */}
       <div
         className="u-view relative grid w-full grid-cols-1 md:h-[calc(100dvh-3.5rem)] md:grid-cols-[var(--rail)_1fr] md:data-[panel=on]:grid-cols-[var(--rail)_1fr_var(--panel)]"
-        data-panel={locked ? 'off' : 'on'}
+        data-panel={readOnly ? 'off' : 'on'}
         style={{ '--rail': `${rail.width}px`, '--panel': `${panel.width}px` } as React.CSSProperties}
       >
         <PanelResizer {...rail} />
-        {!locked && <PanelResizer {...panel} />}
+        {!readOnly && <PanelResizer {...panel} />}
         {/* Left rail — Introduction · pages · End, in the order the voter meets
             The pages you author group onto a soft panel between the two fixed
             screens: they're the part that varies in length, so a shape around
@@ -968,14 +1003,14 @@ export default function BuilderPage() {
                     onReorder={reorderPages}
                     // Closed: the row still selects its screen, but loses the
                     // drag handle and the duplicate/delete pair.
-                    readOnly={locked}
+                    readOnly={readOnly}
                   />
                 ))}
                 {pages.length === 0 && <p className="px-2 py-1 text-[12px] text-muted">No pages yet</p>}
               </div>
               {/* Nothing can be added to a closed form, so the CTA goes rather
                   than sitting there greyed out. */}
-              {!locked && <AddPage onAdd={() => addPage('feedback')} />}
+              {!readOnly && <AddPage onAdd={() => addPage('feedback')} />}
             </div>
 
             <RailRow active={activeScreen === 'end'} onClick={() => goToScreen('end')} icon={FlagCheckered} label="End screen" done={ready.thankyou} marks={marks.railMarks.end} />
@@ -996,7 +1031,7 @@ export default function BuilderPage() {
             // key: a fresh card per screen, so switching pages never carries a
             // scroll offset or a focused field over from the last one.
             key={screen.id}
-            inert={locked}
+            inert={readOnly}
             className={`mx-auto flex w-full flex-col transition-[max-width] duration-300 ease-out ${fillHeight ? 'md:h-full' : ''}`}
             style={{ maxWidth: DEVICE_MAX_WIDTH[device] }}
           >
@@ -1046,7 +1081,7 @@ export default function BuilderPage() {
                     patchOption={patchOption}
                     patchWidget={patchWidget}
                     optionFull={pageOptions.length >= MAX_OPTIONS}
-                    readOnly={locked}
+                    readOnly={readOnly}
                     showPublishErrors={publishErrorScreen === screen.page.id}
                     missingFeedbackPage={missingFeedbackPage}
                     optionMarks={marks.optionMarks}
@@ -1076,7 +1111,7 @@ export default function BuilderPage() {
         </section>
 
         {/* Right properties panel — omitted entirely on a closed form. */}
-        {!locked && (
+        {!readOnly && (
         <aside className="border-t border-line md:overflow-y-auto md:border-l md:border-t-0">
           <p className="border-b border-line px-4 py-3.5 text-[13px] font-medium text-muted">Properties</p>
           {sel.kind === 'welcome' && <WelcomeProperties form={form} onChange={patchForm} />}
@@ -1128,6 +1163,14 @@ export default function BuilderPage() {
         )}
       </div>
 
+      {viewOnly && (
+        <div
+          role="note"
+          className="u-popover fixed bottom-6 left-1/2 z-40 -translate-x-1/2 rounded-[14px] border border-line bg-card px-4 py-2.5 text-[14px] font-medium text-ink shadow-[0_12px_32px_-12px_rgba(0,0,0,0.32)]"
+        >
+          You have view-only access. You can browse this form, but only editors can make changes.
+        </div>
+      )}
 
       {mediaOption && (
         <MediaModal
@@ -1145,7 +1188,19 @@ export default function BuilderPage() {
       )}
 
       {shareOpen && (
-        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} ownerEmail={ownerEmail} viewerEmail={user?.email ?? null} onChange={patchForm} onPublish={publish} onUpToDate={showUpToDateToast} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
+        <ShareDialog form={form} publicUrl={publicUrl} ready={ready} published={published} dirty={dirty} onChange={patchForm} onPublish={publish} onUpToDate={showUpToDateToast} onUnpublish={unpublish} onClose={() => setShareOpen(false)} />
+      )}
+
+      {collaboratorsOpen && access === 'owner' && (
+        <CollaboratorDialog
+          ownerEmail={ownerEmail}
+          viewerEmail={user?.email ?? null}
+          collaborators={form.collaborators ?? []}
+          viewers={form.viewers ?? []}
+          publicUrl={publicUrl}
+          onChange={changeAccess}
+          onClose={() => setCollaboratorsOpen(false)}
+        />
       )}
 
       {upToDateToast !== null && (
