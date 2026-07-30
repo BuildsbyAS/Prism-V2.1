@@ -89,6 +89,15 @@ body {
   corner-shape: round;
 }
 
+/* For a field whose placeholder *is* the value in force — the neutral answer's
+   wording falls back to generated text, and voters see that text. At the usual
+   placeholder weight it read as an empty field, i.e. as if the answer had no
+   label at all. Still lighter than typed text, so "the default" and "mine" stay
+   distinguishable. */
+.u-placeholder-strong::placeholder {
+  color: color-mix(in oklab, var(--color-ink) 70%, transparent);
+}
+
 /* ---------------------------------------------------------------------------
    Hero backdrop dithering.
 

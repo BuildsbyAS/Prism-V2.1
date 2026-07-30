@@ -905,6 +905,30 @@ export async function getFormVoters(formId: string): Promise<FormVoter[]> {
     }))
 }
 
+/**
+ * The address of whoever owns a form — the person its collaborators were added
+ * by, and who keeps it if they all leave.
+ *
+ * `forms.creator_id` is an `auth.users` id, and `auth.users` is unreadable from
+ * a client, so this needs the `form_owner_email()` RPC (creator or collaborator
+ * only). A deployment whose schema predates that function returns nothing rather
+ * than failing — the owner line is then simply absent, and the rest of the
+ * dialog still works. Your own form needs no round trip at all.
+ */
+export async function getFormOwnerEmail(form: Pick<Form, 'id' | 'creator_id'>, viewer: CurrentIdentity): Promise<string | null> {
+  if (!isSupabaseConfigured || !supabase) return demoCreatorEmail(form.creator_id)
+  if (viewer.userId && viewer.userId === form.creator_id) return viewer.email ?? null
+  const { data, error } = await supabase.rpc('form_owner_email', { p_form_id: form.id })
+  if (error) return null
+  return (data as string | null) ?? null
+}
+
+/** Just enough of the signed-in creator to answer "is this mine?". */
+export interface CurrentIdentity {
+  userId: string | null
+  email: string | null
+}
+
 /** Aggregate results for a form: totals, option split, per-widget breakdown. */
 export async function getResults(formId: string): Promise<FormResults> {
   const full = await getFullForm(formId)

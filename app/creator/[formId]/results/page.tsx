@@ -220,7 +220,7 @@ export default function ResultsPage() {
                 if (page.show_neutral_option !== false || neutralCount > 0) {
                   slices.push({
                     id: neutralChoiceKey(page.id),
-                    label: neutralChoiceLabel(opts.length),
+                    label: neutralChoiceLabel(page, opts.length),
                     value: neutralCount,
                     color: optionColor(opts.length),
                   })
@@ -324,7 +324,7 @@ function Respondents({ full, voters }: { full: FullForm; voters: FormVoter[] }) 
   const votePages = full.pages.filter((p) => p.type === 'feedback')
   const optionName = (page: Page, id: string) =>
     id === 'tie'
-      ? neutralChoiceLabel(full.options.filter((option) => option.page_id === page.id).length)
+      ? neutralChoiceLabel(page, full.options.filter((option) => option.page_id === page.id).length)
       : full.options.find((option) => option.id === id)?.name || '—'
 
   return (

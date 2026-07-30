@@ -5,7 +5,7 @@ import type { Form, Option, Page, Widget } from '@/lib/types'
 import { type Readiness, POD_OPTIONS, formName, publishDetailsMissing } from '@/lib/builder'
 import { CaretDown, Check, X } from '@phosphor-icons/react'
 import { getKnownPeople } from '@/lib/store'
-import { personInitials, personName } from '@/lib/format'
+import { personColor, personInitials, personName } from '@/lib/format'
 import { ALLOWED_EMAIL_DOMAIN } from '@/lib/supabase'
 import { EndScreen, sampleResults } from '@/components/EndScreen'
 import { InlineTextArea } from './Inline'
@@ -101,6 +101,8 @@ export function ShareDialog({
   ready,
   published,
   dirty,
+  ownerEmail,
+  viewerEmail,
   onChange,
   onPublish,
   onUpToDate,
@@ -112,6 +114,10 @@ export function ShareDialog({
   ready: Readiness
   published: boolean
   dirty: boolean
+  /** Whoever created the form — named above the collaborators, never editable. */
+  ownerEmail: string | null
+  /** Used only to say "you" instead of your own name. */
+  viewerEmail: string | null
   onChange: (p: Partial<Form>) => void
   onPublish: () => void
   onUpToDate: () => void
@@ -258,6 +264,8 @@ export function ShareDialog({
               // schema until it's next written.
               value={form.collaborators ?? []}
               onChange={(collaborators) => onChange({ collaborators })}
+              ownerEmail={ownerEmail}
+              viewerEmail={viewerEmail}
             />
             {published && (
               <div>
@@ -321,7 +329,17 @@ export function ShareDialog({
  * won't be in that list, so a full address typed in and confirmed is accepted
  * too; that's the difference between a picker and a dead end.
  */
-function CollaboratorPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+function CollaboratorPicker({
+  value,
+  onChange,
+  ownerEmail,
+  viewerEmail,
+}: {
+  value: string[]
+  onChange: (v: string[]) => void
+  ownerEmail: string | null
+  viewerEmail: string | null
+}) {
   const [people, setPeople] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -350,7 +368,34 @@ function CollaboratorPicker({ value, onChange }: { value: string[]; onChange: (v
 
   return (
     <div>
-      <p className="mb-1.5 text-[13px] font-medium text-muted">Collaborators</p>
+      {/* The owner leads the list, always. The picker below it can add and remove
+          people, which made the form look like it belonged to whoever happened to
+          be in that list — on a form someone else created and shared with you,
+          nothing said whose it was. Not removable and not a chip: ownership isn't
+          one of the things this dialog can change. */}
+      <p className="mb-1.5 text-[13px] font-medium text-muted">{ownerEmail ? 'People' : 'Collaborators'}</p>
+      {ownerEmail && (
+        <div className="mb-2 flex items-center gap-2">
+          <span
+            className="u-circle grid h-6 w-6 flex-none place-items-center rounded-full text-[11px] font-semibold text-white"
+            style={{ backgroundColor: personColor(ownerEmail) }}
+          >
+            {personInitials(ownerEmail)}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-[13px] font-medium">
+              {personName(ownerEmail)}
+              {viewerEmail && viewerEmail.toLowerCase() === ownerEmail.toLowerCase() && (
+                <span className="font-normal text-muted"> (you)</span>
+              )}
+            </span>
+            <span className="block truncate text-[13px] text-muted">{ownerEmail}</span>
+          </span>
+          {/* A label, not a control. Bordered it read as a button beside a row of
+              removable chips — the one thing here you can't act on. */}
+          <span className="ml-auto flex-none text-[12px] font-medium text-muted">Owner</span>
+        </div>
+      )}
       {value.length > 0 && (
         <ul className="mb-2 flex flex-wrap gap-1.5">
           {value.map((email) => (

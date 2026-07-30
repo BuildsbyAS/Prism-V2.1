@@ -547,7 +547,7 @@ export default function VoterPage() {
               {selectable && opts.length >= 2 && page.show_neutral_option !== false && (
                 <div className="mt-4">
                   <ChoiceRow
-                    label={neutralChoiceLabel(opts.length)}
+                    label={neutralChoiceLabel(page, opts.length)}
                     selected={picked === 'tie'}
                     disabled={hasVoted || busy}
                     onSelect={() => setChoices((c) => ({ ...c, [page.id]: 'tie' }))}

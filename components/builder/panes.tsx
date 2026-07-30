@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import type { Form, Option, Page, Widget, WidgetType } from '@/lib/types'
-import { MAX_WIDGETS, neutralChoiceLabel } from '@/lib/builder'
+import { MAX_WIDGETS, defaultNeutralLabel, neutralChoiceLabel } from '@/lib/builder'
 import { EMBED_TYPE_LABEL, hostnameOf } from '@/lib/embed'
 import { brightnessStyle } from '@/lib/image'
 import { Plus, Trash, X } from '@phosphor-icons/react'
@@ -227,28 +227,49 @@ export function PageCenter({
             Add at least 2 options, or 1 option and a feedback input.
           </p>
         )}
+        {/* The neutral answer. Not a <label> any more: its wording is editable in
+            place, and inside a label every click in the field would have toggled
+            the checkbox. The checkbox and the status text both still toggle it,
+            so the row keeps two hit targets — they just aren't the text field. */}
         {feedback && options.length >= 2 && (
-          <label
+          <div
             className={`mt-4 flex items-center gap-3 rounded-2xl border px-4 py-3.5 transition ${
               page.show_neutral_option !== false
                 ? 'border-line bg-card text-ink'
                 : 'border-dashed border-line-strong bg-black/[0.015] text-muted'
-            } ${readOnly ? 'cursor-default' : 'cursor-pointer hover:border-ink/40'}`}
+            }`}
           >
             <input
               type="checkbox"
               checked={page.show_neutral_option !== false}
               disabled={readOnly}
               onChange={(event) => onPageChange({ show_neutral_option: event.target.checked })}
-              className="h-4 w-4 flex-none accent-[#18191d]"
+              aria-label={`Offer “${neutralChoiceLabel(page, options.length)}” to voters`}
+              className="h-4 w-4 flex-none accent-[#18191d] disabled:cursor-default"
             />
-            <span className="min-w-0 flex-1 text-[14px] font-medium">
-              {neutralChoiceLabel(options.length)}
-            </span>
-            <span className="flex-none text-[12px] text-muted">
+            {readOnly ? (
+              <span className="min-w-0 flex-1 text-[14px] font-medium">{neutralChoiceLabel(page, options.length)}</span>
+            ) : (
+              // Blank means "use the generated wording", so the placeholder is
+              // that wording — an empty field reads as what voters will see
+              // rather than as something missing.
+              <InlineInput
+                value={page.neutral_label ?? ''}
+                onChange={(v) => onPageChange({ neutral_label: v })}
+                placeholder={defaultNeutralLabel(options.length)}
+                aria-label="Neutral answer wording"
+                className="u-placeholder-strong min-w-0 flex-1 px-1.5 py-0.5 text-[14px] font-medium"
+              />
+            )}
+            <button
+              type="button"
+              disabled={readOnly}
+              onClick={() => onPageChange({ show_neutral_option: page.show_neutral_option === false })}
+              className="flex-none text-[12px] text-muted transition enabled:hover:text-ink disabled:cursor-default"
+            >
               {page.show_neutral_option !== false ? 'Visible to voters' : 'Hidden from voters'}
-            </span>
-          </label>
+            </button>
+          </div>
         )}
       </section>
 
