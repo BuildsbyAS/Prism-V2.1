@@ -172,7 +172,7 @@ export function useFormRoom({
   selection,
   viewerEmail,
   enabled = true,
-  onPeerScreen,
+  onPeerLocation,
   onEdit,
 }: {
   formId: string | null
@@ -184,12 +184,8 @@ export function useFormRoom({
   viewerEmail: string | null
   /** Presence is for the editor. Pass false and nothing is published or read. */
   enabled?: boolean
-  /**
-   * A peer moved to another screen. Called from the transport, so a follower can
-   * navigate in response without an effect watching presence state — the "they
-   * moved" event is exactly that, an event.
-   */
-  onPeerScreen?: (email: string, screen: string) => void
+  /** A peer changed screen or selection, so a follower can mirror their view. */
+  onPeerLocation?: (email: string, screen: string, selection: string | null) => void
   /** A peer changed the document. Apply it to local state. */
   onEdit?: (edit: DocEdit) => void
 }): { me: string | null; peers: PresencePeer[]; send: (edit: DocEdit) => void } {
@@ -210,28 +206,29 @@ export function useFormRoom({
   const whereRef = useRef({ screen, selection })
   const publishRef = useRef<((where: { screen: string; selection: string | null }) => void) | null>(null)
   const sendRef = useRef<((edit: DocEdit) => void) | null>(null)
-  const movedRef = useRef(onPeerScreen)
+  const movedRef = useRef(onPeerLocation)
   const editedRef = useRef(onEdit)
 
   useEffect(() => {
-    movedRef.current = onPeerScreen
+    movedRef.current = onPeerLocation
     editedRef.current = onEdit
-  }, [onPeerScreen, onEdit])
+  }, [onPeerLocation, onEdit])
 
   useEffect(() => {
     if (!active || !formId || !me) return
 
-    // Which screen each tab was last seen on, so "they moved" can be told apart
-    // from a heartbeat repeating what we already knew.
-    const wasOn = new Map<string, string>()
+    // Which location each tab was last seen at, so a real screen/selection move
+    // can be told apart from a heartbeat repeating the same presence payload.
+    const wasAt = new Map<string, { screen: string; selection: string | null }>()
     const mark = (id: string, email: string, at: string, selection: string | null) => {
-      const moved = wasOn.get(id) !== at
-      wasOn.set(id, at)
+      const previous = wasAt.get(id)
+      const moved = previous?.screen !== at || previous.selection !== selection
+      wasAt.set(id, { screen: at, selection })
       setTabs((prev) => ({ ...prev, [id]: { room: formId, email, screen: at, selection, at: Date.now() } }))
-      if (moved) movedRef.current?.(email, at)
+      if (moved) movedRef.current?.(email, at, selection)
     }
     const drop = (id: string) => {
-      wasOn.delete(id)
+      wasAt.delete(id)
       setTabs((prev) => {
         if (!(id in prev)) return prev
         const next = { ...prev }
@@ -260,7 +257,7 @@ export function useFormRoom({
           }
           // The server's roster is authoritative about who left, so anyone
           // missing from a sync is gone — no heartbeat needed to notice.
-          for (const key of [...wasOn.keys()]) if (!seen.has(key)) drop(key)
+          for (const key of [...wasAt.keys()]) if (!seen.has(key)) drop(key)
         })
         // Broadcast, not presence: an edit is an event that happened once, not a
         // fact about who is here. Realtime doesn't echo it back to the sender.
@@ -311,7 +308,7 @@ export function useFormRoom({
         const next: Record<string, Entry> = {}
         for (const [id, p] of Object.entries(prev)) {
           if (p.at > cutoff) next[id] = p
-          else wasOn.delete(id)
+          else wasAt.delete(id)
         }
         return next
       })

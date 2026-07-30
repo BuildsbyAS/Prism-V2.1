@@ -85,6 +85,38 @@ function selectionKey(sel: Selection): string {
       : `${sel.kind}:${sel.key}`
 }
 
+/** Resolve a collaborator's wire selection to something this editor can show. */
+function peerSelection(
+  screen: string,
+  key: string | null,
+  pages: Page[],
+  options: Option[],
+  widgets: Widget[],
+): Selection | null {
+  if (key === 'welcome' && screen === 'welcome') return { kind: 'welcome' }
+  if (key === 'end' && screen === 'end') return { kind: 'end' }
+  if (key?.startsWith('page:')) {
+    const id = key.slice('page:'.length)
+    if (id === screen && pages.some((page) => page.id === id)) return { kind: 'page', id }
+  }
+  if (key?.startsWith('option:')) {
+    const id = key.slice('option:'.length)
+    if (options.some((option) => option.id === id && option.page_id === screen)) {
+      return { kind: 'option', key: id }
+    }
+  }
+  if (key?.startsWith('input:')) {
+    const id = key.slice('input:'.length)
+    if (widgets.some((widget) => widget.id === id && widget.page_id === screen)) {
+      return { kind: 'input', key: id }
+    }
+  }
+  if (screen === 'welcome' || screen === 'end' || pages.some((page) => page.id === screen)) {
+    return selectionFor(screen)
+  }
+  return null
+}
+
 export default function BuilderPage() {
   const params = useParams<{ formId: string }>()
   const formId = params.formId
@@ -179,24 +211,30 @@ export default function BuilderPage() {
   // once and would otherwise close over whoever was followed at the time.
   const followingRef = useRef<string | null>(null)
 
-  /** Screens the canvas can show — a peer may be on a page you haven't loaded. */
-  const screenExists = useCallback(
-    (id: string) => id === 'welcome' || id === 'end' || pages.some((p) => p.id === id),
-    [pages],
-  )
+  /** Mirror the followed editor's page and exact option/input selection. */
+  const onPeerLocation = useCallback(
+    (email: string, screen: string, selection: string | null) => {
+      if (email.toLowerCase() !== followingRef.current?.toLowerCase()) return
+      const next = peerSelection(screen, selection, pages, options, widgets)
+      if (!next) return
+      if (activeScreen === screen && selectionKey(sel) === selectionKey(next)) return
+      setSel(next)
 
-  /**
-   * They moved, so the follower moves. Driven by the presence event rather than
-   * by watching presence state, which keeps this a response to something that
-   * happened — and leaves you free to look elsewhere in between without being
-   * yanked back until they actually navigate again.
-   */
-  const onPeerScreen = useCallback(
-    (email: string, screen: string) => {
-      if (email !== followingRef.current) return
-      if (screenExists(screen)) goToScreen(screen)
+      // Inputs can sit below a tall option grid. Once React has rendered the
+      // followed screen, bring the exact card into view instead of merely
+      // changing a border somewhere below the fold.
+      const id = next.kind === 'option' || next.kind === 'input' ? next.key : null
+      if (!id) return
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const attr = next.kind === 'option' ? 'data-option' : 'data-widget'
+          document
+            .querySelector<HTMLElement>(`[${attr}="${CSS.escape(id)}"]`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        })
+      })
     },
-    [screenExists, goToScreen],
+    [activeScreen, sel, pages, options, widgets],
   )
 
   // What this tab has selected and which screen that resolves to, readable from
@@ -286,19 +324,36 @@ export default function BuilderPage() {
     selection: selectionKey(sel),
     viewerEmail: user?.email ?? null,
     enabled: !isMobile,
-    onPeerScreen,
+    onPeerLocation,
     onEdit: applyEdit,
   })
 
-  /** Start (or stop) following someone, and jump to where they are right now. */
+  // Presence state is the durable source of truth. Mirroring it in an effect
+  // makes follow mode recover from a missed transport event, and it also keeps
+  // the follower locked to the editor they chose until they explicitly stop.
+  useEffect(() => {
+    if (!following) return
+    const target = peers.find(
+      (peer) => !peer.self && peer.email.toLowerCase() === following.toLowerCase(),
+    )
+    if (!target) return
+    const frame = requestAnimationFrame(() =>
+      onPeerLocation(target.email, target.screen, target.selection),
+    )
+    return () => cancelAnimationFrame(frame)
+  }, [following, peers, onPeerLocation])
+
+  /** Start (or stop) following someone, and mirror their current location now. */
   const follow = useCallback(
     (email: string | null) => {
       followingRef.current = email
       setFollowing(email)
-      const target = email ? peers.find((p) => p.email === email)?.screen : null
-      if (target && screenExists(target)) goToScreen(target)
+      const target = email
+        ? peers.find((peer) => peer.email.toLowerCase() === email.toLowerCase())
+        : null
+      if (target) onPeerLocation(target.email, target.screen, target.selection)
     },
-    [peers, screenExists, goToScreen],
+    [peers, onPeerLocation],
   )
 
   useEffect(() => {

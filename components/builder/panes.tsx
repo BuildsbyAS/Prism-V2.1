@@ -331,6 +331,7 @@ function OptionCard({
 }) {
   return (
     <div
+      data-option={option.id}
       onClick={onSelect}
       // An outline rather than a border for the collaborator's ring: the border is
       // already spoken for by your own selection, and the two need to be able to
@@ -346,7 +347,13 @@ function OptionCard({
       {feedback && (
         <div className="flex items-start gap-2 border-b border-line px-4 py-2.5">
           <span className="mt-1 grid h-6 w-6 flex-none place-items-center rounded-md bg-black/[0.06] text-[13px] font-bold">{letter}</span>
-          <div className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="min-w-0 flex-1"
+            onClick={(e) => {
+              e.stopPropagation()
+              onSelect()
+            }}
+          >
             <InlineInput value={option.name} onChange={(v) => onChange({ name: v })} placeholder="Option name" className="px-1.5 py-0.5 text-[15px] font-semibold tracking-tight" />
             <InlineInput value={option.description} onChange={(v) => onChange({ description: v })} placeholder="One line on what's different" className="px-1.5 py-0.5 text-[13px] leading-relaxed text-muted" />
           </div>
@@ -510,12 +517,24 @@ function InputCard({
         <X size={14} aria-hidden="true" />
       </button>
       {showTitle && (
-        <div className="min-w-0" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="min-w-0"
+          onClick={(e) => {
+            e.stopPropagation()
+            onSelect()
+          }}
+        >
           <InlineTextArea value={c.label ?? ''} onChange={(v) => setConfig({ label: v })} placeholder="Your question here" className="px-2 py-1 text-lg font-semibold tracking-tight" />
           <InlineInput value={c.description ?? ''} onChange={(v) => setConfig({ description: v })} placeholder="Description (optional)" className="mt-0.5 px-2 py-1 text-[13px] leading-relaxed text-muted" />
         </div>
       )}
-      <div className={showTitle ? 'mt-3' : ''} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={showTitle ? 'mt-3' : ''}
+        onClick={(e) => {
+          e.stopPropagation()
+          onSelect()
+        }}
+      >
         <div className="pointer-events-none">
           <WidgetInput widget={widget} value={undefined} onChange={() => {}} hideLabel />
         </div>
